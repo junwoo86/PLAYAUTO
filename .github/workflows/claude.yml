@@ -12,6 +12,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  id-token: write  # OIDC 토큰을 위해 필요
 
 jobs:
   claude-review:
@@ -28,49 +29,11 @@ jobs:
           # Claude Code OAuth 토큰 사용 (Max 플랜)
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           
-          # 또는 Anthropic API 키 사용
+          # GitHub 토큰 (자동 제공됨)
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          
+          # 또는 Anthropic API 키 사용 (OAuth 토큰이 없는 경우)
           # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          
-          # 모델 설정 (기본값: claude-3-5-sonnet-20241022)
-          model: claude-3-5-sonnet-20241022
-          
-          # PR 리뷰 활성화
-          review_pull_requests: true
-          
-          # 이슈 코멘트 응답 활성화
-          respond_to_issues: true
-          
-          # 자동 수정 제안 활성화
-          suggest_fixes: true
-          
-          # 리뷰 언어 설정
-          review_language: "ko"
-          
-          # 리뷰 상세도 (low, medium, high)
-          review_detail_level: "high"
-          
-          # 보안 검사 활성화
-          security_check: true
-          
-          # 코드 품질 검사 활성화
-          quality_check: true
-          
-          # 테스트 커버리지 검사
-          test_coverage_check: false
-          
-          # 커스텀 리뷰 지침
-          custom_instructions: |
-            다음 사항에 중점을 두고 리뷰해주세요:
-            1. React/TypeScript 베스트 프랙티스 준수 여부
-            2. FastAPI/SQLAlchemy 패턴 준수 여부
-            3. 보안 취약점 (SQL Injection, XSS 등)
-            4. 성능 최적화 기회
-            5. 코드 재사용성 및 유지보수성
-            6. 에러 처리 및 예외 처리
-            7. API 응답 형식 일관성
-            8. 데이터베이스 쿼리 최적화
-            
-            모든 피드백은 한글로 작성해주세요.
 
       - name: Post Review Summary
         if: always()
