@@ -1,0 +1,121 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude Code Review
+        uses: anthropics/claude-code-action@main
+        with:
+          # Claude Code OAuth 토큰 사용 (Max 플랜)
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          
+          # 또는 Anthropic API 키 사용
+          # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          
+          # 모델 설정 (기본값: claude-3-5-sonnet-20241022)
+          model: claude-3-5-sonnet-20241022
+          
+          # PR 리뷰 활성화
+          review_pull_requests: true
+          
+          # 이슈 코멘트 응답 활성화
+          respond_to_issues: true
+          
+          # 자동 수정 제안 활성화
+          suggest_fixes: true
+          
+          # 리뷰 언어 설정
+          review_language: "ko"
+          
+          # 리뷰 상세도 (low, medium, high)
+          review_detail_level: "high"
+          
+          # 보안 검사 활성화
+          security_check: true
+          
+          # 코드 품질 검사 활성화
+          quality_check: true
+          
+          # 테스트 커버리지 검사
+          test_coverage_check: false
+          
+          # 커스텀 리뷰 지침
+          custom_instructions: |
+            다음 사항에 중점을 두고 리뷰해주세요:
+            1. React/TypeScript 베스트 프랙티스 준수 여부
+            2. FastAPI/SQLAlchemy 패턴 준수 여부
+            3. 보안 취약점 (SQL Injection, XSS 등)
+            4. 성능 최적화 기회
+            5. 코드 재사용성 및 유지보수성
+            6. 에러 처리 및 예외 처리
+            7. API 응답 형식 일관성
+            8. 데이터베이스 쿼리 최적화
+            
+            모든 피드백은 한글로 작성해주세요.
+
+      - name: Post Review Summary
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const summary = `
+            ## 🤖 Claude Code Review 완료
+            
+            리뷰가 완료되었습니다. PR 코멘트를 확인해주세요.
+            
+            ### 리뷰 포인트
+            - 코드 품질 및 베스트 프랙티스
+            - 보안 취약점 검사
+            - 성능 최적화 제안
+            - 버그 가능성 검토
+            `;
+            
+            if (context.eventName === 'pull_request') {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body: summary
+              });
+            }
+
+  # 특정 라벨이 붙은 이슈에 대한 자동 응답
+  claude-assist:
+    if: github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'claude-help')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Claude Assistance
+        uses: anthropics/claude-code-action@main
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-3-5-sonnet-20241022
+          respond_to_issues: true
+          custom_instructions: |
+            이슈를 분석하고 다음을 제공해주세요:
+            1. 문제 해결 방안
+            2. 구현 예시 코드
+            3. 관련 문서 또는 리소스
+            
+            PLAYAUTO 프로젝트의 구조와 기술 스택을 고려하여 답변해주세요.
+            모든 답변은 한글로 작성해주세요.
