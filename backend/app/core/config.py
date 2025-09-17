@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
     
     # CORS
-    FRONTEND_URL: str = "http://localhost:5173"
+    FRONTEND_URL: str = "http://localhost:3001"
     BACKEND_CORS_ORIGINS: List[str] = []
     
     @property

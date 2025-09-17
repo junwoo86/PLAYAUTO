@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowRight, MapPin, Package, Search, RefreshCw } from 'lucide-react';
-import { productAPI } from '../services/api/product';
-import { transactionAPI } from '../services/api/transaction';
-import toast, { Toaster } from 'react-hot-toast';
+import { api } from '../services/api';
+import { showSuccess, showError, showWarning, showInfo } from '../utils/toast';
 
 interface Product {
   id: string;
@@ -52,7 +51,7 @@ const ProductMove: React.FC = () => {
 
       setIsSearching(true);
       try {
-        const response = await productAPI.getAll();
+        const response = await api.get('/products');
         const filtered = response.data.filter(
           (product: Product) =>
             product.product_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -63,7 +62,7 @@ const ProductMove: React.FC = () => {
         setShowDropdown(true);
       } catch (error) {
         console.error('제품 검색 실패:', error);
-        toast.error('제품 검색에 실패했습니다');
+        showError('제품 검색에 실패했습니다');
       } finally {
         setIsSearching(false);
       }
@@ -92,29 +91,29 @@ const ProductMove: React.FC = () => {
     e.preventDefault();
 
     if (!selectedProduct) {
-      toast.error('제품을 선택해주세요');
+      showError('제품을 선택해주세요');
       return;
     }
 
     if (!newLocation.trim()) {
-      toast.error('이동할 위치를 입력해주세요');
+      showError('이동할 위치를 입력해주세요');
       return;
     }
 
     if (newLocation === selectedProduct.location) {
-      toast.error('현재 위치와 동일한 위치로는 이동할 수 없습니다');
+      showError('현재 위치와 동일한 위치로는 이동할 수 없습니다');
       return;
     }
 
     if (moveQuantity <= 0 || moveQuantity > selectedProduct.current_stock) {
-      toast.error(`이동 수량은 1 ~ ${selectedProduct.current_stock} 사이여야 합니다`);
+      showError(`이동 수량은 1 ~ ${selectedProduct.current_stock} 사이여야 합니다`);
       return;
     }
 
     setIsLoading(true);
     try {
       // 1. transfer 트랜잭션 생성
-      await transactionAPI.create({
+      await api.post('/transactions', {
         product_id: selectedProduct.id,
         transaction_type: 'transfer',
         quantity: moveQuantity,
@@ -126,12 +125,12 @@ const ProductMove: React.FC = () => {
 
       // 2. 전체 수량 이동인 경우 제품 위치 업데이트
       if (moveQuantity === selectedProduct.current_stock) {
-        await productAPI.update(selectedProduct.id, {
+        await api.put(`/products/${selectedProduct.id}`, {
           location: newLocation
         });
       }
 
-      toast.success(
+      showSuccess(
         `${selectedProduct.product_name} ${moveQuantity}${selectedProduct.unit}를 ${newLocation}(으)로 이동했습니다`
       );
 
@@ -144,7 +143,7 @@ const ProductMove: React.FC = () => {
       setMoveMemo('');
     } catch (error) {
       console.error('위치 이동 실패:', error);
-      toast.error('위치 이동 처리 중 오류가 발생했습니다');
+      showError('위치 이동 처리 중 오류가 발생했습니다');
     } finally {
       setIsLoading(false);
     }
@@ -162,7 +161,6 @@ const ProductMove: React.FC = () => {
 
   return (
     <div className="p-6">
-      <Toaster position="top-right" />
       
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">제품 위치 이동</h1>

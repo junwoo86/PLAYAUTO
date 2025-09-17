@@ -14,13 +14,15 @@ interface StatsCardProps {
   title: string;
   value: string | number;
   icon?: LucideIcon;
-  color?: 'blue' | 'green' | 'red' | 'yellow' | 'purple' | 'gray' | 'teal';
+  color?: 'blue' | 'green' | 'red' | 'yellow' | 'purple' | 'gray' | 'teal' | 'orange';
   subStats?: StatItem[];
   trend?: {
     value: number;
     label: string;
   };
   loading?: boolean;
+  onClick?: () => void;
+  footer?: React.ReactNode;
 }
 
 const colorClasses = {
@@ -30,7 +32,8 @@ const colorClasses = {
   yellow: 'text-yellow-600',
   purple: 'text-purple-600',
   gray: 'text-gray-600',
-  teal: 'text-teal-600'
+  teal: 'text-teal-600',
+  orange: 'text-orange-600'
 };
 
 const bgColorClasses = {
@@ -40,7 +43,8 @@ const bgColorClasses = {
   yellow: 'bg-yellow-50',
   purple: 'bg-purple-50',
   gray: 'bg-gray-50',
-  teal: 'bg-teal-50'
+  teal: 'bg-teal-50',
+  orange: 'bg-orange-50'
 };
 
 export function StatsCard({
@@ -50,7 +54,9 @@ export function StatsCard({
   color = 'blue',
   subStats = [],
   trend,
-  loading = false
+  loading = false,
+  onClick,
+  footer
 }: StatsCardProps) {
   if (loading) {
     return (
@@ -66,7 +72,10 @@ export function StatsCard({
   }
 
   return (
-    <div className="bg-white rounded-lg shadow p-6 hover:shadow-lg transition-shadow">
+    <div 
+      className={`bg-white rounded-lg shadow p-6 hover:shadow-lg transition-shadow ${onClick ? 'cursor-pointer' : ''}`}
+      onClick={onClick}
+    >
       <div className="flex items-start justify-between mb-4">
         <div className="flex-1">
           <h3 className="text-sm font-medium text-gray-500 mb-2">{title}</h3>
@@ -110,6 +119,12 @@ export function StatsCard({
               </div>
             </div>
           ))}
+        </div>
+      )}
+      
+      {footer && (
+        <div className="mt-4">
+          {footer}
         </div>
       )}
     </div>

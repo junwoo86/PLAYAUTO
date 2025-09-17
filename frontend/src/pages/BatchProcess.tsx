@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { 
-  FileSpreadsheet, Upload, Download, AlertTriangle, 
-  CheckCircle, XCircle, Save, ArrowRightLeft,
+import {
+  FileSpreadsheet, Upload, Download, AlertTriangle,
+  CheckCircle, CheckCircle2, XCircle, Save, ArrowRightLeft,
   ClipboardCheck, Package, AlertCircle, Info, RefreshCw
 } from 'lucide-react';
-import { productAPI } from '../services/api/product';
-import { transactionAPI } from '../services/api/transaction';
-import { batchProcessAPI } from '../services/api/batchProcess';
-import toast, { Toaster } from 'react-hot-toast';
+import { productAPI, transactionAPI } from '../services/api';
+import { showSuccess, showError, showInfo, showWarning } from '../utils/toast';
+import { PageHeader, Button, Alert } from '../components';
+import { TextareaField } from '../components/forms/FormField';
+import { getLocalDateString, getLocalDateTimeString } from '../utils/dateUtils';
 
 // 입출고 일괄 처리용 행 타입
 interface TransactionRow {
@@ -38,6 +39,32 @@ interface StockCountRow {
   explanation?: string;
 }
 
+// 제품 추가 일괄 처리용 행 타입
+interface ProductRow {
+  productCode: string;
+  productName: string;
+  barcode?: string;
+  category?: string;
+  manufacturer?: string;
+  unit?: string;
+  initialStock: number;
+  safetyStock: number;
+  purchasePrice: number;
+  purchaseCurrency: string;
+  salePrice: number;
+  saleCurrency: string;
+  zoneId?: string;
+  warehouse?: string;  // 창고 필드 추가
+  supplier?: string;
+  supplierEmail?: string;
+  contactEmail?: string;
+  leadTime?: number;
+  moq?: number;
+  memo?: string;
+  status: 'valid' | 'error' | 'warning';
+  errorMessage?: string;
+}
+
 function BatchProcess() {
   const [products, setProducts] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -49,14 +76,14 @@ function BatchProcess() {
   const fetchProducts = async () => {
     try {
       const response = await productAPI.getAll();
-      setProducts(response.data);
+      setProducts(response.data || []);
     } catch (error) {
-      toast.error('제품 목록을 불러오는데 실패했습니다');
+      showError('제품 목록을 불러오는데 실패했습니다');
     }
   };
   
   // 탭 상태
-  const [activeTab, setActiveTab] = useState<'transaction' | 'stockcount'>('transaction');
+  const [activeTab, setActiveTab] = useState<'transaction' | 'stockcount' | 'product'>('transaction');
   
   // 입출고 일괄 처리 상태
   const [transactionData, setTransactionData] = useState<TransactionRow[]>([]);
@@ -73,9 +100,44 @@ function BatchProcess() {
   const [isProcessing, setIsProcessing] = useState(false);
   const transactionFileInputRef = useRef<HTMLInputElement>(null);
   const stockCountFileInputRef = useRef<HTMLInputElement>(null);
+  const productFileInputRef = useRef<HTMLInputElement>(null);
+
+  // 추가 상태
+  const [pendingDiscrepancies, setPendingDiscrepancies] = useState<any[]>([]);
+
+  // 제품 추가 일괄 처리 상태
+  const [productData, setProductData] = useState<ProductRow[]>([]);
+  const [showProductPreview, setShowProductPreview] = useState(false);
+  const [duplicateProducts, setDuplicateProducts] = useState<{sku: string[], name: string[]}>({sku: [], name: []});
+  const [showDuplicateWarning, setShowDuplicateWarning] = useState(false);
+
+  // 헬퍼 함수들은 이제 utils/toast에서 import해서 사용
+
+  const addTransaction = async (transaction: any) => {
+    try {
+      await transactionAPI.create(transaction);
+    } catch (error) {
+      console.error('Transaction creation failed:', error);
+    }
+  };
+
+  const resolveDiscrepancy = async (productId: string, explanation: string) => {
+    // 불일치 해결 로직 구현
+    console.log('Resolving discrepancy for product:', productId, 'with explanation:', explanation);
+  };
 
   // 입출고 템플릿 다운로드
   const downloadTransactionTemplate = () => {
+    // CSV 필드를 큰따옴표로 감싸는 헬퍼 함수
+    const escapeCSVField = (field: string | number | null | undefined): string => {
+      if (field === null || field === undefined) return '""';
+      const fieldStr = String(field);
+      // 큰따옴표가 있으면 이스케이프 처리
+      const escaped = fieldStr.replace(/"/g, '""');
+      // 쉼표, 큰따옴표, 개행이 포함되어 있거나 항상 큰따옴표로 감싸기
+      return `"${escaped}"`;
+    };
+    
     const headers = ['카테고리', '제품코드', '제품명', '제조사', '입고수량', '출고수량', '날짜(YYYY-MM-DD)', '메모'];
     // 카테고리 → 제품명 순서로 정렬
     const sortedProducts = [...products].sort((a, b) => {
@@ -83,70 +145,184 @@ function BatchProcess() {
       const categoryCompare = (a.category || '').localeCompare(b.category || '');
       if (categoryCompare !== 0) return categoryCompare;
       // 2순위: 제품명
-      return a.productName.localeCompare(b.productName);
+      return (a.product_name || '').localeCompare(b.product_name || '');
     });
     
     const sampleData = sortedProducts.map(p => [
-      p.category || '',
-      p.productCode,
-      p.productName,
-      p.manufacturer || '',
-      '0',
-      '0',
-      new Date().toISOString().split('T')[0],
-      ''
+      escapeCSVField(p.category),
+      escapeCSVField(p.product_code),
+      escapeCSVField(p.product_name),
+      escapeCSVField(p.manufacturer),
+      escapeCSVField('0'),
+      escapeCSVField('0'),
+      escapeCSVField(getLocalDateString()),
+      escapeCSVField('')
     ]);
     
     const csvContent = [
-      headers.join(','),
+      headers.map(escapeCSVField).join(','),
       ...sampleData.map(row => row.join(','))
     ].join('\n');
     
     const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
+    link.href = url;
     link.download = `입출고_일괄처리_템플릿_${new Date().toISOString().split('T')[0]}.csv`;
+    link.style.display = 'none';
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
     
     showInfo('템플릿 다운로드가 완료되었습니다. 입고/출고 수량을 입력해주세요.');
   };
 
   // 재고실사 템플릿 다운로드
   const downloadStockCountTemplate = () => {
+    // CSV 필드를 큰따옴표로 감싸는 헬퍼 함수
+    const escapeCSVField = (field: string | number | null | undefined): string => {
+      if (field === null || field === undefined) return '""';
+      const fieldStr = String(field);
+      // 큰따옴표가 있으면 이스케이프 처리
+      const escaped = fieldStr.replace(/"/g, '""');
+      // 쉼표, 큰따옴표, 개행이 포함되어 있거나 항상 큰따옴표로 감싸기
+      return `"${escaped}"`;
+    };
+    
     const headers = ['구역ID', '카테고리', '제품코드', '제품명', '제조사', '시스템재고', '실사재고'];
     // 구역ID → 제품명 순서로 정렬
     const sortedProducts = [...products].sort((a, b) => {
       // 1순위: 구역ID
-      const zoneCompare = (a.zoneId || '').localeCompare(b.zoneId || '');
+      const zoneCompare = (a.zone_id || '').localeCompare(b.zone_id || '');
       if (zoneCompare !== 0) return zoneCompare;
       // 2순위: 제품명
-      return a.productName.localeCompare(b.productName);
+      return (a.product_name || '').localeCompare(b.product_name || '');
     });
     
     const sampleData = sortedProducts.map(p => [
-      p.zoneId || '',
-      p.category || '',
-      p.productCode,
-      p.productName,
-      p.manufacturer || '',
-      p.currentStock.toString(),
-      p.currentStock.toString() // 기본값으로 현재 재고 표시
+      escapeCSVField(p.zone_id),
+      escapeCSVField(p.category),
+      escapeCSVField(p.product_code),
+      escapeCSVField(p.product_name),
+      escapeCSVField(p.manufacturer),
+      escapeCSVField(p.current_stock || 0),
+      escapeCSVField('') // 실사재고는 비워둠 - 사용자가 직접 입력
     ]);
     
     const csvContent = [
-      headers.join(','),
+      headers.map(escapeCSVField).join(','),
       ...sampleData.map(row => row.join(','))
     ].join('\n');
     
     const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `재고실사_템플릿_${new Date().toISOString().split('T')[0]}.csv`;
+    link.href = url;
+    link.download = `재고실사_템플릿_${getLocalDateString()}.csv`;
+    link.style.display = 'none';
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
     
     showInfo('템플릿 다운로드가 완료되었습니다. 실사재고 수량을 확인 후 수정해주세요.');
   };
 
+  // 제품 추가 템플릿 다운로드
+  const downloadProductTemplate = () => {
+    // CSV 필드를 큰따옴표로 감싸는 헬퍼 함수
+    const escapeCSVField = (field: string | number | null | undefined): string => {
+      if (field === null || field === undefined) return '""';
+      const fieldStr = String(field);
+      const escaped = fieldStr.replace(/"/g, '""');
+      return `"${escaped}"`;
+    };
+
+    const headers = [
+      '제품코드(SKU)*', '제품명*', '바코드', '카테고리', '제조사',
+      '단위', '초기수량', '안전재고', '판매단가', '판매통화',
+      '구역ID', '창고', '공급업체', '공급업체이메일', '담당자이메일',
+      '리드타임(일)', '최소주문수량', '메모'
+    ];
+
+    // 샘플 데이터 (1행만)
+    const sampleData = [
+      [
+        escapeCSVField('P-NEW-001'),
+        escapeCSVField('신규 제품 예시'),
+        escapeCSVField('8801234567890'),
+        escapeCSVField('영양제'),
+        escapeCSVField('한국제약'),
+        escapeCSVField('개'),
+        escapeCSVField('50'),
+        escapeCSVField('100'),
+        escapeCSVField('15000'),
+        escapeCSVField('KRW'),
+        escapeCSVField('A-1'),
+        escapeCSVField('본사 창고'),  // 창고 필드 추가
+        escapeCSVField('메디팜'),
+        escapeCSVField('supplier@medipharm.kr'),
+        escapeCSVField('contact@company.kr'),
+        escapeCSVField('7'),
+        escapeCSVField('10'),
+        escapeCSVField('신규 등록 제품')
+      ]
+    ];
+
+    const csvContent = [
+      headers.map(escapeCSVField).join(','),
+      ...sampleData.map(row => row.join(','))
+    ].join('\n');
+
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `제품추가_템플릿_${getLocalDateString()}.csv`;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    showInfo('템플릿 다운로드가 완료되었습니다. 제품 정보를 입력 후 업로드해주세요.');
+  };
+
+  // CSV 파싱 헬퍼 함수 - 큰따옴표로 감싸진 필드 처리
+  const parseCSVLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+      
+      if (char === '"' && inQuotes && nextChar === '"') {
+        // 이스케이프된 큰따옴표
+        current += '"';
+        i++; // 다음 문자 건너뛰기
+      } else if (char === '"') {
+        // 큰따옴표 시작/끝
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        // 필드 구분자
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    
+    // 마지막 필드 추가
+    if (current || line.endsWith(',')) {
+      result.push(current.trim());
+    }
+    
+    return result;
+  };
+  
   // 입출고 파일 파싱
   const parseTransactionFile = (file: File) => {
     const reader = new FileReader();
@@ -156,7 +332,7 @@ function BatchProcess() {
       const data: TransactionRow[] = [];
       
       for (let i = 1; i < lines.length; i++) {
-        const values = lines[i].split(',').map(v => v.trim());
+        const values = parseCSVLine(lines[i]);
         const row: TransactionRow = {
           category: values[0] || '',
           productCode: values[1] || '',
@@ -170,16 +346,16 @@ function BatchProcess() {
         };
         
         // 검증
-        const product = products.find(p => p.productCode === row.productCode);
+        const product = products.find(p => p.product_code === row.productCode);
         if (!product) {
           row.status = 'error';
           row.errorMessage = '존재하지 않는 제품코드';
         } else if (row.inbound === 0 && row.outbound === 0) {
           row.status = 'warning';
           row.errorMessage = '입고/출고 수량이 모두 0입니다';
-        } else if (row.outbound > product.currentStock) {
+        } else if (row.outbound > product.current_stock) {
           row.status = 'error';
-          row.errorMessage = `재고 부족 (현재: ${product.currentStock}개)`;
+          row.errorMessage = `재고 부족 (현재: ${product.current_stock}개)`;
         }
         
         data.push(row);
@@ -200,7 +376,7 @@ function BatchProcess() {
       const data: StockCountRow[] = [];
       
       for (let i = 1; i < lines.length; i++) {
-        const values = lines[i].split(',').map(v => v.trim());
+        const values = parseCSVLine(lines[i]);
         const row: StockCountRow = {
           zoneId: values[0] || '',
           category: values[1] || '',
@@ -214,12 +390,12 @@ function BatchProcess() {
         };
         
         // 검증
-        const product = products.find(p => p.productCode === row.productCode);
+        const product = products.find(p => p.product_code === row.productCode);
         if (!product) {
           row.status = 'error';
           row.errorMessage = '존재하지 않는 제품코드';
         } else {
-          row.systemStock = product.currentStock;
+          row.systemStock = product.current_stock;
           row.discrepancy = row.physicalStock - row.systemStock;
           
           if (row.discrepancy !== 0) {
@@ -243,6 +419,108 @@ function BatchProcess() {
     reader.readAsText(file, 'UTF-8');
   };
 
+  // 제품 CSV 파일 파싱
+  const parseProductFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      const lines = text.split('\n').filter(line => line.trim());
+
+      // 헤더 제거
+      lines.shift();
+
+      const data: ProductRow[] = [];
+      const skuSet = new Set<string>();
+      const nameSet = new Set<string>();
+      const duplicateSKUs: string[] = [];
+      const duplicateNames: string[] = [];
+
+      // 기존 제품 정보 가져오기 (중복 체크용)
+      const existingSKUs = new Set(products.map(p => p.product_code));
+      const existingNames = new Set(products.map(p => p.product_name));
+
+      for (let i = 0; i < lines.length; i++) {
+        const values = parseCSVLine(lines[i]);
+
+        // 필수 필드 체크
+        if (!values[0] || !values[1]) continue;
+
+        const row: ProductRow = {
+          productCode: values[0]?.trim() || '',
+          productName: values[1]?.trim() || '',
+          barcode: values[2]?.trim() || '',
+          category: values[3]?.trim() || '',
+          manufacturer: values[4]?.trim() || '',
+          unit: values[5]?.trim() || '개',
+          initialStock: parseInt(values[6]) || 0,
+          safetyStock: parseInt(values[7]) || 0,
+          purchasePrice: 0,  // 기본값 0
+          purchaseCurrency: 'KRW',  // 기본값 KRW
+          salePrice: parseFloat(values[8]) || 0,
+          saleCurrency: values[9]?.trim() || 'KRW',
+          zoneId: values[10]?.trim() || '',
+          warehouse: values[11]?.trim() || '',  // 창고 필드 추가
+          supplier: values[12]?.trim() || '',
+          supplierEmail: values[13]?.trim() || '',
+          contactEmail: values[14]?.trim() || '',
+          leadTime: parseInt(values[15]) || 0,
+          moq: parseInt(values[16]) || 0,
+          memo: values[17]?.trim() || '',
+          status: 'valid',
+          errorMessage: ''
+        };
+
+        // SKU 중복 체크 (DB에 이미 존재하는지)
+        if (existingSKUs.has(row.productCode)) {
+          row.status = 'error';
+          row.errorMessage = `이미 등록된 제품코드(SKU): ${row.productCode}`;
+          duplicateSKUs.push(row.productCode);
+        }
+        // SKU 중복 체크 (CSV 내에서)
+        else if (skuSet.has(row.productCode)) {
+          row.status = 'error';
+          row.errorMessage = `CSV 내 중복 제품코드(SKU): ${row.productCode}`;
+          duplicateSKUs.push(row.productCode);
+        } else {
+          skuSet.add(row.productCode);
+        }
+
+        // 제품명 중복 체크 (경고만)
+        if (existingNames.has(row.productName)) {
+          if (row.status !== 'error') {
+            row.status = 'warning';
+            row.errorMessage = `이미 등록된 제품명: ${row.productName}`;
+          }
+          duplicateNames.push(row.productName);
+        } else if (nameSet.has(row.productName)) {
+          if (row.status !== 'error') {
+            row.status = 'warning';
+            row.errorMessage = `CSV 내 중복 제품명: ${row.productName}`;
+          }
+          duplicateNames.push(row.productName);
+        } else {
+          nameSet.add(row.productName);
+        }
+
+        data.push(row);
+      }
+
+      setProductData(data);
+      setShowProductPreview(true);
+      setDuplicateProducts({ sku: duplicateSKUs, name: duplicateNames });
+
+      // SKU 중복이 있으면 에러 표시
+      if (duplicateSKUs.length > 0) {
+        showError(`중복된 제품코드(SKU)가 있습니다: ${duplicateSKUs.join(', ')}`);
+      }
+      // 제품명 중복이 있으면 경고 표시
+      else if (duplicateNames.length > 0) {
+        setShowDuplicateWarning(true);
+      }
+    };
+    reader.readAsText(file, 'UTF-8');
+  };
+
   // 드래그 앤 드롭 핸들러
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -253,18 +531,20 @@ function BatchProcess() {
     setIsDragging(false);
   };
 
-  const handleDrop = (e: React.DragEvent, type: 'transaction' | 'stockcount') => {
+  const handleDrop = (e: React.DragEvent, type: 'transaction' | 'stockcount' | 'product') => {
     e.preventDefault();
     setIsDragging(false);
-    
+
     const files = e.dataTransfer.files;
     if (files.length > 0) {
       const file = files[0];
       if (file.name.endsWith('.csv')) {
         if (type === 'transaction') {
           parseTransactionFile(file);
-        } else {
+        } else if (type === 'stockcount') {
           parseStockCountFile(file);
+        } else if (type === 'product') {
+          parseProductFile(file);
         }
       } else {
         showError('CSV 파일만 업로드 가능합니다.');
@@ -273,54 +553,78 @@ function BatchProcess() {
   };
 
   // 입출고 일괄 처리 실행
-  const processTransactions = () => {
+  const processTransactions = async () => {
     setIsProcessing(true);
     
-    transactionData.forEach(row => {
-      if (row.status === 'error') return;
+    try {
+      const transactions = [];
       
-      const product = products.find(p => p.productCode === row.productCode);
-      if (!product) return;
-      
-      // 입고 처리
-      if (row.inbound > 0) {
-        addTransaction({
-          type: 'inbound',
-          productId: product.id,
-          productName: product.productName,
-          quantity: row.inbound,
-          previousStock: product.currentStock,
-          newStock: product.currentStock + row.inbound,
-          date: new Date(row.date),
-          memo: row.memo || '일괄 입고 처리',
-          createdBy: '관리자'
-        });
+      for (const row of transactionData) {
+        if (row.status === 'error') continue;
+        
+        const product = products.find(p => p.product_code === row.productCode);
+        if (!product) continue;
+        
+        // 입고 처리
+        if (row.inbound > 0) {
+          transactions.push({
+            product_code: row.productCode,
+            product_name: row.productName,
+            transaction_type: 'IN',
+            quantity: row.inbound,
+            date: row.date ? `${row.date}T00:00:00+09:00` : getLocalDateTimeString(),  // 날짜가 있으면 KST 00:00으로, 없으면 현재 시간
+            memo: row.memo || '일괄 입고 처리'
+          });
+        }
+        
+        // 출고 처리
+        if (row.outbound > 0) {
+          transactions.push({
+            product_code: row.productCode,
+            product_name: row.productName,
+            transaction_type: 'OUT',
+            quantity: row.outbound,
+            date: row.date ? `${row.date}T00:00:00+09:00` : getLocalDateTimeString(),  // 날짜가 있으면 KST 00:00으로, 없으면 현재 시간
+            memo: row.memo || '일괄 출고 처리'
+          });
+        }
       }
       
-      // 출고 처리
-      if (row.outbound > 0) {
-        addTransaction({
-          type: 'outbound',
-          productId: product.id,
-          productName: product.productName,
-          quantity: row.outbound,
-          previousStock: product.currentStock,
-          newStock: product.currentStock - row.outbound,
-          date: new Date(row.date),
-          memo: row.memo || '일괄 출고 처리',
-          createdBy: '관리자'
+      if (transactions.length > 0) {
+        // 백엔드 batch API 호출
+        const response = await fetch('http://localhost:8000/api/v1/batch/process', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ transactions })
         });
+        
+        const result = await response.json();
+        
+        if (result.success > 0) {
+          showSuccess(`${result.success}개 거래가 처리되었습니다.`);
+        }
+        
+        if (result.failed > 0) {
+          showError(`${result.failed}개 거래가 실패했습니다.`);
+          console.error('Batch processing errors:', result.errors);
+        }
       }
-    });
-    
-    setIsProcessing(false);
-    setShowTransactionPreview(false);
-    setTransactionData([]);
-    showSuccess('입출고 일괄 처리가 완료되었습니다.');
+      
+      await fetchProducts(); // 제품 목록 새로고침
+      setShowTransactionPreview(false);
+      setTransactionData([]);
+    } catch (error) {
+      console.error('Batch processing error:', error);
+      showError('일괄 처리 중 오류가 발생했습니다.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // 재고실사 일괄 처리 실행
-  const processStockCount = () => {
+  const processStockCount = async () => {
     // 불일치 항목 중 소명이 없는 것 체크
     const discrepancyRows = stockCountData.filter(d => d.discrepancy !== 0);
     const missingExplanations = discrepancyRows.filter(d => 
@@ -335,37 +639,117 @@ function BatchProcess() {
     
     setIsProcessing(true);
     
-    stockCountData.forEach(row => {
-      if (row.status === 'error') return;
+    try {
+      const transactions = [];
       
-      const product = products.find(p => p.productCode === row.productCode);
-      if (!product) return;
+      for (const row of stockCountData) {
+        if (row.status === 'error') continue;
+        
+        const product = products.find(p => p.product_code === row.productCode);
+        if (!product) continue;
+        
+        // 불일치 조정 처리
+        if (row.discrepancy !== 0) {
+          transactions.push({
+            product_code: row.productCode,
+            product_name: row.productName,
+            transaction_type: 'ADJUST',
+            quantity: row.discrepancy, // ADJUST는 조정량 (차이값)으로 설정
+            date: getLocalDateTimeString(),  // 로컬 시간을 한국 타임존으로 전송
+            reason: '재고실사',
+            memo: explanations[row.productCode] || '재고실사 조정'
+          });
+        }
+      }
       
-      // 불일치 조정 처리
-      if (row.discrepancy !== 0) {
-        addTransaction({
-          type: 'adjustment',
-          productId: product.id,
-          productName: product.productName,
-          quantity: row.discrepancy,
-          previousStock: product.currentStock,
-          newStock: row.physicalStock,
-          date: new Date(),
-          reason: '재고실사',
-          memo: explanations[row.productCode],
-          createdBy: '관리자'
+      if (transactions.length > 0) {
+        // 백엔드 batch API 호출
+        const response = await fetch('http://localhost:8000/api/v1/batch/process', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ transactions })
         });
         
-        // 불일치 해결 처리
-        resolveDiscrepancy(product.id, explanations[row.productCode]);
+        const result = await response.json();
+        
+        if (result.success > 0) {
+          showSuccess(`${result.success}개 재고 조정이 완료되었습니다.`);
+        }
+        
+        if (result.failed > 0) {
+          showError(`${result.failed}개 조정이 실패했습니다.`);
+          console.error('Stock count errors:', result.errors);
+        }
       }
-    });
-    
-    setIsProcessing(false);
-    setShowStockCountPreview(false);
-    setStockCountData([]);
-    setExplanations({});
-    showSuccess('재고실사 처리가 완료되었습니다.');
+      
+      await fetchProducts(); // 제품 목록 새로고침
+      setShowStockCountPreview(false);
+      setStockCountData([]);
+      setExplanations({});
+    } catch (error) {
+      console.error('Stock count processing error:', error);
+      showError('재고실사 처리 중 오류가 발생했습니다.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 제품 추가 일괄 처리
+  const processProducts = async () => {
+    // 중복된 제품명이 있는 경우 경고 확인
+    const nameWarnings = productData.filter(d => d.status === 'warning' && d.errorMessage?.includes('제품명'));
+    if (nameWarnings.length > 0 && !showDuplicateWarning) {
+      const confirmMessage = `다음 제품명이 이미 존재합니다:\n${nameWarnings.map(p => `- ${p.productName}`).join('\n')}\n\n계속 진행하시겠습니까?`;
+      if (!window.confirm(confirmMessage)) {
+        return;
+      }
+    }
+
+    setIsProcessing(true);
+
+    try {
+      const validProducts = productData.filter(d => d.status !== 'error');
+
+      // 백엔드 batch/products API 호출
+      const response = await fetch('http://localhost:8000/api/v1/batch/products', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ products: validProducts })
+      });
+
+      const result = await response.json();
+
+      if (result.success > 0) {
+        showSuccess(`${result.success}개의 제품이 성공적으로 추가되었습니다.`);
+
+        // 제품 목록 새로고침
+        await fetchProducts();
+      }
+
+      if (result.failed > 0) {
+        showWarning(`${result.failed}개의 제품 추가에 실패했습니다.`);
+      }
+
+      // 상태 초기화
+      setShowProductPreview(false);
+      setProductData([]);
+      setDuplicateProducts({sku: [], name: []});
+      setShowDuplicateWarning(false);
+
+      // 파일 입력 초기화
+      if (productFileInputRef.current) {
+        productFileInputRef.current.value = '';
+      }
+    } catch (error) {
+      console.error('Product batch processing error:', error);
+      showError('제품 추가 처리 중 오류가 발생했습니다.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
@@ -403,6 +787,19 @@ function BatchProcess() {
               <div className="flex items-center gap-2">
                 <ClipboardCheck size={16} />
                 재고실사 일괄 처리
+              </div>
+            </button>
+            <button
+              onClick={() => setActiveTab('product')}
+              className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'product'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Package size={16} />
+                제품 추가 일괄 처리
               </div>
             </button>
           </nav>
@@ -659,6 +1056,132 @@ function BatchProcess() {
                       icon={Save}
                     >
                       {isProcessing ? '처리중...' : '조정 실행'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 제품 추가 일괄 처리 탭 */}
+          {activeTab === 'product' && (
+            <div>
+              {/* 설명 */}
+              <Alert
+                type="info"
+                message="여러 제품을 한번에 추가할 수 있습니다. 템플릿을 다운로드하여 정보를 입력 후 업로드하세요."
+                className="mb-4"
+              />
+
+              {/* 템플릿 다운로드 버튼 */}
+              <div className="mb-6">
+                <Button icon={Download} onClick={downloadProductTemplate}>
+                  제품 추가 템플릿 다운로드
+                </Button>
+              </div>
+
+              {/* 파일 업로드 영역 */}
+              <div
+                className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
+                  isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
+                }`}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, 'product')}
+              >
+                <Upload size={48} className="mx-auto mb-4 text-gray-400" />
+                <p className="text-lg mb-2">CSV 파일을 드래그하여 업로드하거나</p>
+                <input
+                  ref={productFileInputRef}
+                  type="file"
+                  accept=".csv"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) parseProductFile(file);
+                  }}
+                  className="hidden"
+                />
+                <Button
+                  onClick={() => productFileInputRef.current?.click()}
+                  variant="outline"
+                >
+                  파일 선택
+                </Button>
+                <p className="text-sm text-gray-500 mt-2">CSV 파일만 지원됩니다</p>
+              </div>
+
+              {/* 미리보기 */}
+              {showProductPreview && (
+                <div className="mt-6 border rounded-lg">
+                  <div className="p-4 bg-gray-50 border-b flex justify-between items-center">
+                    <h3 className="font-semibold">데이터 미리보기</h3>
+                    <span className="text-sm text-gray-600">
+                      총 {productData.length}건 |
+                      정상 {productData.filter(d => d.status === 'valid').length}건 |
+                      경고 {productData.filter(d => d.status === 'warning').length}건 |
+                      오류 {productData.filter(d => d.status === 'error').length}건
+                    </span>
+                  </div>
+                  <div className="max-h-96 overflow-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr className="border-b">
+                          <th className="text-left p-3">상태</th>
+                          <th className="text-left p-3">SKU</th>
+                          <th className="text-left p-3">제품명</th>
+                          <th className="text-left p-3">카테고리</th>
+                          <th className="text-left p-3">제조사</th>
+                          <th className="text-right p-3">안전재고</th>
+                          <th className="text-right p-3">판매가격</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {productData.map((row, idx) => (
+                          <tr key={idx} className={`border-b ${
+                            row.status === 'error' ? 'bg-red-50' :
+                            row.status === 'warning' ? 'bg-yellow-50' : ''
+                          }`}>
+                            <td className="p-3">
+                              {row.status === 'valid' && (
+                                <CheckCircle2 size={16} className="text-green-500" />
+                              )}
+                              {row.status === 'warning' && (
+                                <AlertTriangle size={16} className="text-yellow-500" />
+                              )}
+                              {row.status === 'error' && (
+                                <XCircle size={16} className="text-red-500" />
+                              )}
+                            </td>
+                            <td className="p-3">{row.productCode}</td>
+                            <td className="p-3">{row.productName}</td>
+                            <td className="p-3">{row.category || '-'}</td>
+                            <td className="p-3">{row.manufacturer || '-'}</td>
+                            <td className="text-right p-3">{row.safetyStock}개</td>
+                            <td className="text-right p-3">
+                              {row.salePrice.toLocaleString()} {row.saleCurrency}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="p-4 border-t flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setShowProductPreview(false);
+                        setProductData([]);
+                        setDuplicateProducts({sku: [], name: []});
+                      }}
+                    >
+                      취소
+                    </Button>
+                    <Button
+                      onClick={processProducts}
+                      disabled={isProcessing || productData.some(d => d.status === 'error')}
+                      icon={isProcessing ? undefined : CheckCircle2}
+                    >
+                      {isProcessing ? '처리 중...' : `${productData.filter(d => d.status !== 'error').length}개 제품 추가`}
                     </Button>
                   </div>
                 </div>

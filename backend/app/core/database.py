@@ -1,7 +1,7 @@
 """
 Database configuration and session management
 """
-from sqlalchemy import create_engine, MetaData, text, inspect
+from sqlalchemy import create_engine, MetaData, text, inspect, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import NullPool
@@ -24,6 +24,12 @@ engine = create_engine(
     echo=settings.DEBUG,  # SQL 쿼리 로깅
     future=True
 )
+
+# 연결할 때마다 타임존을 Asia/Seoul로 설정
+@event.listens_for(engine, "connect")
+def set_timezone(dbapi_conn, connection_record):
+    with dbapi_conn.cursor() as cursor:
+        cursor.execute("SET TIME ZONE 'Asia/Seoul'")
 
 # 세션 팩토리
 SessionLocal = sessionmaker(

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Calendar, RefreshCw, FileText, Download, TrendingUp, TrendingDown } from 'lucide-react';
 import { dailyLedgerAPI, DailyLedger, LedgerSummary } from '../services/api/dailyLedger';
-import toast, { Toaster } from 'react-hot-toast';
+import { showSuccess, showError, showWarning, showInfo } from '../utils/toast';
 
 const DailyLedgerPage: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
@@ -23,7 +23,7 @@ const DailyLedgerPage: React.FC = () => {
       setLedgers(response.data);
     } catch (error) {
       console.error('수불부 조회 실패:', error);
-      toast.error('수불부 데이터를 불러오는데 실패했습니다');
+      showError('수불부 데이터를 불러오는데 실패했습니다');
     } finally {
       setIsLoading(false);
     }
@@ -35,6 +35,7 @@ const DailyLedgerPage: React.FC = () => {
       setSummary(response.data);
     } catch (error) {
       console.error('요약 조회 실패:', error);
+      // Summary는 부가정보이므로 토스트 메시지 표시하지 않음
     }
   };
 
@@ -43,14 +44,14 @@ const DailyLedgerPage: React.FC = () => {
     setIsGenerating(true);
     try {
       const response = await dailyLedgerAPI.generate(selectedDate);
-      toast.success(response.data.message);
+      showSuccess(response.data.message);
       
       // 데이터 새로고침
       fetchLedgers();
       fetchSummary();
     } catch (error) {
       console.error('수불부 생성 실패:', error);
-      toast.error('수불부 생성에 실패했습니다');
+      showError('수불부 생성에 실패했습니다');
     } finally {
       setIsGenerating(false);
     }
@@ -59,7 +60,7 @@ const DailyLedgerPage: React.FC = () => {
   // CSV 다운로드
   const downloadCSV = () => {
     if (ledgers.length === 0) {
-      toast.error('다운로드할 데이터가 없습니다');
+      showError('다운로드할 데이터가 없습니다');
       return;
     }
 
@@ -90,12 +91,11 @@ const DailyLedgerPage: React.FC = () => {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
 
-    toast.success('CSV 파일 다운로드 완료');
+    showSuccess('CSV 파일 다운로드 완료');
   };
 
   return (
     <div className="p-6">
-      <Toaster position="top-right" />
       
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">일일 수불부</h1>

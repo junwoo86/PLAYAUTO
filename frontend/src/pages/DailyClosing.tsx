@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Calendar, Download, CheckCircle, AlertTriangle, 
   FileText, Clock, TrendingUp, TrendingDown, Settings,
@@ -13,9 +13,11 @@ import {
   SelectField,
   TextField
 } from '../components';
-import { useData } from '../contexts/DataContext';
+import { dailyLedgerAPI, DailyLedger } from '../services/api/dailyLedger';
+import { productAPI } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useAppContext } from '../App';
+import { showSuccess, showError, showWarning, showInfo } from '../utils/toast';
 
 interface DailyLedgerItem {
   productId: string;
@@ -41,10 +43,12 @@ interface ClosingStatus {
 }
 
 function DailyClosing() {
-  const { products, transactions, pendingDiscrepancies } = useData();
   const { showError, showSuccess, showWarning, showInfo } = useToast();
   const { setActivePage } = useAppContext();
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [ledgers, setLedgers] = useState<DailyLedger[]>([]);
+  const [products, setProducts] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
   const [closingStatus, setClosingStatus] = useState<ClosingStatus>({
     date: new Date(),
     status: 'pending',
@@ -58,57 +62,64 @@ function DailyClosing() {
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportFormat, setExportFormat] = useState<'pdf' | 'excel'>('excel');
 
-  // 선택한 날짜의 거래 필터링
-  const todayTransactions = useMemo(() => {
-    const startDate = new Date(selectedDate);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(selectedDate);
-    endDate.setHours(23, 59, 59, 999);
-    
-    return transactions.filter(t => {
-      const tDate = new Date(t.date);
-      return tDate >= startDate && tDate <= endDate;
-    });
-  }, [transactions, selectedDate]);
+  // 데이터 로드
+  useEffect(() => {
+    fetchData();
+  }, [selectedDate]);
 
-  // 일일 수불부 데이터 생성
+  const fetchData = async () => {
+    setIsLoading(true);
+    try {
+      const [ledgersResponse, productsResponse] = await Promise.all([
+        dailyLedgerAPI.getAll({ ledger_date: selectedDate }),
+        productAPI.getAll()
+      ]);
+      setLedgers(ledgersResponse.data || []);
+      setProducts(productsResponse.data || []);
+    } catch (error) {
+      console.error('데이터 로드 실패:', error);
+      showError('데이터를 불러오는데 실패했습니다');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 수불부 생성
+  const generateLedger = async () => {
+    setIsLoading(true);
+    try {
+      const response = await dailyLedgerAPI.generate(selectedDate);
+      showSuccess(response.data.message);
+      await fetchData(); // 데이터 새로고침
+    } catch (error) {
+      console.error('수불부 생성 실패:', error);
+      showError('수불부 생성에 실패했습니다');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 일일 수불부 데이터 변환
   const dailyLedgerData: DailyLedgerItem[] = useMemo(() => {
-    return products.map(product => {
-      // 이전일 마감 재고 (간단히 현재 재고에서 오늘 거래를 역산)
-      const productTransactions = todayTransactions.filter(t => t.productId === product.id);
-      
-      const inbound = productTransactions
-        .filter(t => t.type === 'inbound')
-        .reduce((sum, t) => sum + t.quantity, 0);
-      
-      const outbound = productTransactions
-        .filter(t => t.type === 'outbound')
-        .reduce((sum, t) => sum + Math.abs(t.quantity), 0);
-      
-      const adjustment = productTransactions
-        .filter(t => t.type === 'adjustment')
-        .reduce((sum, t) => sum + t.quantity, 0);
-      
-      const openingStock = product.currentStock - inbound + outbound - adjustment;
-      const closingStock = openingStock + inbound - outbound + adjustment;
-      const discrepancy = closingStock - product.currentStock;
+    return ledgers.map(ledger => {
+      const discrepancy = ledger.ending_stock - (ledger.product ? products.find(p => p.id === ledger.product_id)?.current_stock || ledger.ending_stock : ledger.ending_stock);
       
       return {
-        productId: product.id,
-        productCode: product.productCode,
-        productName: product.productName,
-        openingStock,
-        inbound,
-        outbound,
-        adjustment,
-        closingStock,
-        systemStock: product.currentStock,
+        productId: ledger.product_id,
+        productCode: ledger.product?.product_code || '',
+        productName: ledger.product?.product_name || '알 수 없는 제품',
+        openingStock: ledger.beginning_stock,
+        inbound: ledger.total_inbound,
+        outbound: ledger.total_outbound,
+        adjustment: ledger.adjustments,
+        closingStock: ledger.ending_stock,
+        systemStock: ledger.product ? products.find(p => p.id === ledger.product_id)?.current_stock || ledger.ending_stock : ledger.ending_stock,
         discrepancy,
         status: discrepancy === 0 ? 'matched' : 
                 Math.abs(discrepancy) > 10 ? 'discrepancy' : 'warning'
       };
     });
-  }, [products, todayTransactions]);
+  }, [ledgers, products]);
 
   // 통계 계산
   const statistics = useMemo(() => {
@@ -116,7 +127,7 @@ function DailyClosing() {
     const totalOutbound = dailyLedgerData.reduce((sum, item) => sum + item.outbound, 0);
     const totalAdjustment = dailyLedgerData.reduce((sum, item) => sum + Math.abs(item.adjustment), 0);
     const totalDiscrepancy = dailyLedgerData.filter(item => item.discrepancy !== 0).length;
-    const accuracyRate = ((dailyLedgerData.length - totalDiscrepancy) / dailyLedgerData.length * 100).toFixed(1);
+    const accuracyRate = dailyLedgerData.length > 0 ? ((dailyLedgerData.length - totalDiscrepancy) / dailyLedgerData.length * 100).toFixed(1) : '100.0';
     
     return {
       totalInbound,
@@ -124,19 +135,12 @@ function DailyClosing() {
       totalAdjustment,
       totalDiscrepancy,
       accuracyRate,
-      totalTransactions: todayTransactions.length
+      totalTransactions: totalInbound + totalOutbound + totalAdjustment
     };
-  }, [dailyLedgerData, todayTransactions]);
+  }, [dailyLedgerData]);
 
   // 마감 처리
   const handleClosing = async () => {
-    // 미처리 재고실사 불일치 체크
-    if (pendingDiscrepancies && pendingDiscrepancies.length > 0) {
-      showError(`미처리된 재고실사 불일치가 ${pendingDiscrepancies.length}건 있습니다. 먼저 소명을 완료해주세요.`);
-      setShowConfirmModal(false);
-      return;
-    }
-
     setIsProcessing(true);
     setClosingStatus({
       ...closingStatus,
@@ -282,21 +286,20 @@ function DailyClosing() {
               variant="outline"
               icon={RefreshCw}
               onClick={() => {
-                // 날짜를 오늘로 리셋하고 데이터 새로고침
-                setSelectedDate(new Date().toISOString().split('T')[0]);
-                setClosingStatus({
-                  date: new Date(),
-                  status: 'pending',
-                  totalItems: 0,
-                  matchedItems: 0,
-                  discrepancyItems: 0,
-                  totalDiscrepancyValue: 0
-                });
-                setIsProcessing(false);
+                fetchData();
                 showInfo('데이터가 새로고침되었습니다.');
               }}
+              disabled={isLoading}
             >
-              새로고침
+              {isLoading ? '로딩 중...' : '새로고침'}
+            </Button>
+            <Button
+              variant="outline"
+              icon={FileText}
+              onClick={generateLedger}
+              disabled={isLoading}
+            >
+              수불부 생성
             </Button>
             <Button
               icon={Download}
@@ -394,38 +397,12 @@ function DailyClosing() {
         />
       </div>
 
-      {/* 재고실사 불일치 알림 */}
-      {pendingDiscrepancies && pendingDiscrepancies.length > 0 && (
+      {/* 빈 데이터 알림 */}
+      {dailyLedgerData.length === 0 && !isLoading && (
         <Alert
-          type="error"
-          title="재고실사 불일치 미처리"
-          message={
-            <div>
-              <p className="mb-2">재고실사에서 발견된 {pendingDiscrepancies.length}건의 불일치가 소명되지 않았습니다.</p>
-              <div className="space-y-1 text-sm">
-                {pendingDiscrepancies.slice(0, 3).map((item, index) => (
-                  <div key={index} className="flex justify-between">
-                    <span>{item.productName} ({item.productCode})</span>
-                    <span className="font-medium text-red-600">
-                      시스템: {item.systemStock}개 / 실사: {item.physicalStock}개 (차이: {item.discrepancy > 0 ? '+' : ''}{item.discrepancy}개)
-                    </span>
-                  </div>
-                ))}
-                {pendingDiscrepancies.length > 3 && (
-                  <div className="text-gray-500">... 외 {pendingDiscrepancies.length - 3}건</div>
-                )}
-              </div>
-              <Button
-                variant="outline"
-                size="small"
-                className="mt-3"
-                icon={FileSpreadsheet}
-                onClick={() => setActivePage('batch-process')}
-              >
-                일괄 처리로 이동
-              </Button>
-            </div>
-          }
+          type="warning"
+          title="수불부 데이터 없음"
+          message="해당 날짜의 수불부가 생성되지 않았습니다. '수불부 생성' 버튼을 클릭해주세요."
           className="mb-6"
         />
       )}
@@ -453,10 +430,23 @@ function DailyClosing() {
             })} 거래 내역
           </p>
         </div>
-        <DataTable
-          columns={columns}
-          data={dailyLedgerData}
-        />
+        {isLoading ? (
+          <div className="p-8 text-center">
+            <RefreshCw className="h-8 w-8 text-blue-500 animate-spin mx-auto mb-2" />
+            <p className="text-gray-500">데이터를 불러오는 중...</p>
+          </div>
+        ) : dailyLedgerData.length === 0 ? (
+          <div className="p-8 text-center">
+            <FileText className="h-12 w-12 text-gray-300 mx-auto mb-2" />
+            <p className="text-gray-500">해당 날짜의 수불부가 없습니다</p>
+            <p className="text-sm text-gray-400 mt-1">상단의 '수불부 생성' 버튼을 눌러 생성하세요</p>
+          </div>
+        ) : (
+          <DataTable
+            columns={columns}
+            data={dailyLedgerData}
+          />
+        )}
       </div>
 
       {/* 마감 확인 모달 */}
@@ -489,22 +479,6 @@ function DailyClosing() {
                 </div>
               </div>
 
-              {pendingDiscrepancies && pendingDiscrepancies.length > 0 && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                  <div className="flex items-start gap-2">
-                    <AlertCircle className="text-red-600 mt-0.5" size={16} />
-                    <div className="flex-1">
-                      <p className="text-sm text-red-800 font-medium">
-                        재고실사 불일치 미처리
-                      </p>
-                      <p className="text-sm text-red-700 mt-1">
-                        {pendingDiscrepancies.length}건의 재고실사 불일치가 소명되지 않았습니다.
-                        마감 전에 반드시 소명을 완료해주세요.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
 
               <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
                 <p className="text-sm text-yellow-800">

@@ -7,6 +7,7 @@ export { ChartCard, SimpleBarChart, MiniLineChart } from './cards/ChartCard';
 
 // 피드백 컴포넌트
 export { Alert, Toast, InlineAlert } from './feedback/Alert';
+export { ConfirmDialog } from './feedback/ConfirmDialog';
 
 // 폼 컴포넌트
 export { 

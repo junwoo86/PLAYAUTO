@@ -1,378 +1,419 @@
 import React, { useState, useEffect } from 'react';
-import { RotateCcw, Package, Calendar, AlertCircle, Check, X } from 'lucide-react';
-import { transactionAPI } from '../services/api/transaction';
-import { productAPI } from '../services/api/product';
-import toast, { Toaster } from 'react-hot-toast';
-
-interface Transaction {
-  id: string;
-  product_id: string;
-  transaction_type: string;
-  quantity: number;
-  date: string;
-  reason?: string;
-  memo?: string;
-  created_at: string;
-  product?: Product;
-}
+import { Package, RotateCcw, XCircle, AlertTriangle, CheckCircle } from 'lucide-react';
+import { api } from '../services/api';
+import { showSuccess, showError, showWarning } from '../utils/toast';
 
 interface Product {
-  id: string;
   product_code: string;
   product_name: string;
   current_stock: number;
+  category: string;
   unit: string;
 }
 
+interface ProcessLog {
+  id: string;
+  product_name: string;
+  process_type: string;
+  status: string;
+  quantity: number;
+  reason: string;
+  created_at: string;
+}
+
 const CancelReturn: React.FC = () => {
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [products, setProducts] = useState<Map<string, Product>>(new Map());
-  const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
-  const [returnQuantity, setReturnQuantity] = useState<number>(0);
-  const [returnReason, setReturnReason] = useState('');
-  const [returnMemo, setReturnMemo] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  // 상태 관리
+  const [products, setProducts] = useState<Product[]>([]);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showDropdown, setShowDropdown] = useState(false);
+
+  const [processType, setProcessType] = useState<'cancel' | 'return-good' | 'return-damaged'>('cancel');
+  const [quantity, setQuantity] = useState<number>(1);
+  const [reason, setReason] = useState('');
+
+  const [recentLogs, setRecentLogs] = useState<ProcessLog[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [dateFilter, setDateFilter] = useState({
-    startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    endDate: new Date().toISOString().split('T')[0]
-  });
 
-  // 거래 내역 조회
+  // 제품 목록 가져오기
   useEffect(() => {
-    fetchTransactions();
-  }, [dateFilter]);
+    fetchProducts();
+    fetchRecentLogs();
+  }, []);
 
-  const fetchTransactions = async () => {
-    setIsLoading(true);
+  const fetchProducts = async () => {
     try {
-      // 모든 거래 내역 조회
-      const response = await transactionAPI.getAll();
-      
-      // OUT 타입 거래만 필터링하고 날짜 필터 적용
-      const outTransactions = response.data.filter((t: Transaction) => 
-        t.transaction_type === 'OUT' &&
-        t.date >= dateFilter.startDate &&
-        t.date <= dateFilter.endDate
-      ).sort((a: Transaction, b: Transaction) => 
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      );
-
-      // 제품 정보 조회
-      const productIds = [...new Set(outTransactions.map((t: Transaction) => t.product_id))];
-      const productMap = new Map<string, Product>();
-      
-      for (const productId of productIds) {
-        try {
-          const productResponse = await productAPI.getById(productId);
-          productMap.set(productId, productResponse.data);
-        } catch (error) {
-          console.error(`제품 정보 조회 실패: ${productId}`, error);
-        }
-      }
-
-      setProducts(productMap);
-      
-      // 거래 내역에 제품 정보 추가
-      const transactionsWithProducts = outTransactions.map((t: Transaction) => ({
-        ...t,
-        product: productMap.get(t.product_id)
-      }));
-
-      setTransactions(transactionsWithProducts);
+      const response = await api.get('/products');
+      const data = response.data.items || response.data.data || response.data || [];
+      setProducts(Array.isArray(data) ? data : []);
     } catch (error) {
-      console.error('거래 내역 조회 실패:', error);
-      toast.error('거래 내역을 불러오는데 실패했습니다');
-    } finally {
-      setIsLoading(false);
+      console.error('제품 목록 조회 실패:', error);
+      showError('제품 목록을 불러올 수 없습니다');
     }
   };
 
-  // 반품 선택
-  const selectTransaction = (transaction: Transaction) => {
-    setSelectedTransaction(transaction);
-    setReturnQuantity(transaction.quantity);
-    setReturnReason('');
-    setReturnMemo('');
+  const fetchRecentLogs = async () => {
+    try {
+      const response = await api.get('/transactions', {
+        params: {
+          limit: 20
+        }
+      });
+
+      const logs = (response.data.data || [])
+        .filter((trans: any) => {
+          // 취소/반품 관련 트랜잭션만 필터링
+          return trans.memo?.includes('[취소') ||
+                 trans.memo?.includes('[반품') ||
+                 trans.reason?.includes('cancel') ||
+                 trans.reason?.includes('return');
+        })
+        .slice(0, 10)
+        .map((trans: any) => {
+          let processType = '기타';
+          let status = '처리완료';
+
+          if (trans.memo?.includes('[취소')) {
+            processType = '취소';
+            status = '재입고';
+          } else if (trans.memo?.includes('[반품(양호')) {
+            processType = '반품';
+            status = '재입고';
+          } else if (trans.memo?.includes('[반품(파손')) {
+            processType = '반품';
+            status = '폐기';
+          }
+
+          // memo에서 실제 사유 추출 (prefix 제거)
+          let reason = trans.memo || trans.reason || '';
+          reason = reason.replace(/^\[.*?\]_/, '');
+
+          return {
+            id: trans.id,
+            product_name: trans.product_name || trans.product_code,
+            process_type: processType,
+            status: status,
+            quantity: trans.quantity,
+            reason: reason,
+            created_at: trans.created_at
+          };
+        });
+
+      setRecentLogs(logs);
+    } catch (error) {
+      console.error('최근 처리 내역 조회 실패:', error);
+    }
   };
 
-  // 반품 처리
-  const handleReturn = async () => {
-    if (!selectedTransaction || !selectedTransaction.product) {
-      toast.error('거래를 선택해주세요');
+  // 제품 검색 필터링
+  const filteredProducts = products.filter(product =>
+    product.product_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    product.product_code.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  // 제품 선택 처리
+  const handleProductSelect = (product: Product) => {
+    setSelectedProduct(product);
+    setSearchTerm(product.product_name);
+    setShowDropdown(false);
+    setQuantity(1);
+  };
+
+  // 처리 실행
+  const handleProcess = async () => {
+    if (!selectedProduct) {
+      showError('제품을 선택해주세요');
       return;
     }
 
-    if (returnQuantity <= 0 || returnQuantity > selectedTransaction.quantity) {
-      toast.error(`반품 수량은 1 ~ ${selectedTransaction.quantity} 사이여야 합니다`);
+    if (!quantity || quantity <= 0) {
+      showError('올바른 수량을 입력해주세요');
       return;
     }
 
-    if (!returnReason.trim()) {
-      toast.error('반품 사유를 입력해주세요');
+    if (!reason.trim()) {
+      showError('처리 사유를 입력해주세요');
       return;
     }
 
     setIsProcessing(true);
-    try {
-      // return 타입으로 새 트랜잭션 생성
-      await transactionAPI.create({
-        product_id: selectedTransaction.product_id,
-        transaction_type: 'return',
-        quantity: returnQuantity,
-        reason: returnReason,
-        memo: returnMemo || `원거래: ${selectedTransaction.id}`,
-        date: new Date().toISOString().split('T')[0]
-      });
 
-      toast.success(
-        `${selectedTransaction.product.product_name} ${returnQuantity}${selectedTransaction.product.unit} 반품 완료`
-      );
+    try {
+      // 처리 유형에 따른 prefix 생성
+      let processPrefix = '';
+      if (processType === 'cancel') {
+        processPrefix = '[취소(재입고)]_';
+      } else if (processType === 'return-good') {
+        processPrefix = '[반품(양호-재입고)]_';
+      } else if (processType === 'return-damaged') {
+        processPrefix = '[반품(파손-폐기)]_';
+      }
+
+      // 처리 유형과 상태에 따른 트랜잭션 데이터 구성
+      let transactionData: any = {
+        product_code: selectedProduct.product_code,
+        quantity: quantity,
+        memo: processPrefix + reason
+      };
+
+      if (processType === 'cancel') {
+        // 취소: 재입고 처리 (IN으로 처리)
+        transactionData.transaction_type = 'IN';
+        transactionData.reason = 'cancel_return';
+      } else if (processType === 'return-good') {
+        // 반품(양호): 재입고 처리 (IN으로 처리)
+        transactionData.transaction_type = 'IN';
+        transactionData.reason = 'return_restock';
+      } else if (processType === 'return-damaged') {
+        // 반품(파손): 재고 조정 (ADJUST로 처리, 수량 0)
+        transactionData.transaction_type = 'ADJUST';
+        transactionData.quantity = 0;
+        transactionData.reason = 'return_damaged';
+      }
+
+      console.log('전송할 데이터:', transactionData);
+      await api.post('/transactions', transactionData);
+
+      // 성공 메시지
+      let actionText = '';
+      let toastMessage = '';
+      if (processType === 'cancel') {
+        actionText = '취소(재입고)';
+        toastMessage = `${selectedProduct.product_name} ${quantity}${selectedProduct.unit} 취소 처리가 완료되었습니다. (재고에 반영됨)`;
+      } else if (processType === 'return-good') {
+        actionText = '반품(양호-재입고)';
+        toastMessage = `${selectedProduct.product_name} ${quantity}${selectedProduct.unit} 반품(양호) 처리가 완료되었습니다. (재고에 반영됨)`;
+      } else if (processType === 'return-damaged') {
+        actionText = '반품(파손-폐기)';
+        toastMessage = `${selectedProduct.product_name} ${quantity}${selectedProduct.unit} 반품(파손) 처리가 완료되었습니다. (폐기 처리됨)`;
+      }
+
+      if (processType === 'return-damaged') {
+        showWarning(toastMessage);
+      } else {
+        showSuccess(toastMessage);
+      }
 
       // 폼 초기화
-      setSelectedTransaction(null);
-      setReturnQuantity(0);
-      setReturnReason('');
-      setReturnMemo('');
+      setSelectedProduct(null);
+      setSearchTerm('');
+      setQuantity(1);
+      setReason('');
+      setProcessType('cancel');
 
-      // 거래 내역 새로고침
-      fetchTransactions();
+      // 목록 새로고침
+      await fetchRecentLogs();
+      await fetchProducts();
+
     } catch (error) {
-      console.error('반품 처리 실패:', error);
-      toast.error('반품 처리 중 오류가 발생했습니다');
+      console.error('처리 실패:', error);
+      showError('처리 중 오류가 발생했습니다');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // 선택 취소
-  const cancelSelection = () => {
-    setSelectedTransaction(null);
-    setReturnQuantity(0);
-    setReturnReason('');
-    setReturnMemo('');
-  };
-
   return (
     <div className="p-6">
-      <Toaster position="top-right" />
-      
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">취소 및 반품</h1>
-        <p className="mt-2 text-gray-600">출고된 제품의 반품을 처리합니다</p>
+        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <RotateCcw className="h-8 w-8 text-blue-600" />
+          취소 및 반품
+        </h1>
+        <p className="text-gray-600 mt-2">제품 취소 및 반품 처리를 수행합니다</p>
+        <p className="text-sm text-gray-500 mt-1">부분 재입고 부분 폐기의 경우, 나누어 각각 처리 바랍니다.</p>
       </div>
 
-      {/* 날짜 필터 */}
-      <div className="bg-white rounded-lg shadow-md p-4 mb-6">
-        <div className="flex items-center gap-4">
-          <Calendar className="h-5 w-5 text-gray-400" />
-          <div className="flex items-center gap-2">
-            <input
-              type="date"
-              value={dateFilter.startDate}
-              onChange={(e) => setDateFilter({...dateFilter, startDate: e.target.value})}
-              className="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-            />
-            <span className="text-gray-500">~</span>
-            <input
-              type="date"
-              value={dateFilter.endDate}
-              onChange={(e) => setDateFilter({...dateFilter, endDate: e.target.value})}
-              className="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <button
-            onClick={fetchTransactions}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            조회
-          </button>
-        </div>
-      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* 왼쪽: 처리 폼 */}
+        <div className="lg:col-span-2">
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <h2 className="text-lg font-semibold mb-4">처리 정보 입력</h2>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* 거래 내역 테이블 */}
-        <div className="bg-white rounded-lg shadow-md overflow-hidden">
-          <div className="p-4 bg-gray-50 border-b">
-            <h2 className="text-lg font-semibold text-gray-900">출고 내역</h2>
-          </div>
-          
-          <div className="overflow-x-auto">
-            {isLoading ? (
-              <div className="p-8 text-center text-gray-500">
-                거래 내역을 불러오는 중...
-              </div>
-            ) : transactions.length === 0 ? (
-              <div className="p-8 text-center text-gray-500">
-                <Package className="h-12 w-12 text-gray-300 mx-auto mb-2" />
-                <p>해당 기간에 출고 내역이 없습니다</p>
-              </div>
-            ) : (
-              <table className="min-w-full">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">날짜</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">제품명</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">수량</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">작업</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {transactions.map((transaction) => (
-                    <tr 
-                      key={transaction.id}
-                      className={`hover:bg-gray-50 ${
-                        selectedTransaction?.id === transaction.id ? 'bg-blue-50' : ''
-                      }`}
-                    >
-                      <td className="px-4 py-3 text-sm text-gray-900">
-                        {transaction.date}
-                      </td>
-                      <td className="px-4 py-3 text-sm">
-                        <div>
-                          <p className="font-medium text-gray-900">
-                            {transaction.product?.product_name || 'Unknown'}
-                          </p>
-                          <p className="text-xs text-gray-500">
-                            {transaction.product?.product_code || '-'}
-                          </p>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-900">
-                        {transaction.quantity}{transaction.product?.unit || ''}
-                      </td>
-                      <td className="px-4 py-3">
-                        <button
-                          onClick={() => selectTransaction(transaction)}
-                          className={`px-3 py-1 text-sm rounded-lg transition-colors ${
-                            selectedTransaction?.id === transaction.id
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-red-100 text-red-700 hover:bg-red-200'
-                          }`}
+            {/* 제품 선택 */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                제품 선택
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    setShowDropdown(true);
+                    if (!e.target.value) setSelectedProduct(null);
+                  }}
+                  onFocus={() => setShowDropdown(true)}
+                  placeholder="제품명 또는 제품코드로 검색"
+                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+
+                {showDropdown && searchTerm && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border rounded-lg shadow-lg max-h-60 overflow-auto">
+                    {filteredProducts.length > 0 ? (
+                      filteredProducts.slice(0, 5).map(product => (
+                        <div
+                          key={product.product_code}
+                          onClick={() => handleProductSelect(product)}
+                          className="px-3 py-2 hover:bg-gray-50 cursor-pointer"
                         >
-                          <RotateCcw className="h-4 w-4 inline mr-1" />
-                          반품
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
+                          <div className="font-medium">{product.product_name}</div>
+                          <div className="text-sm text-gray-500">
+                            {product.product_code} | 재고: {product.current_stock}{product.unit}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="px-3 py-2 text-gray-500">검색 결과가 없습니다</div>
+                    )}
+                  </div>
+                )}
+              </div>
 
-        {/* 반품 처리 폼 */}
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-gray-900">반품 처리</h2>
-          </div>
+              {selectedProduct && (
+                <div className="mt-2 p-3 bg-blue-50 rounded-lg">
+                  <div className="font-medium text-blue-900">{selectedProduct.product_name}</div>
+                  <div className="text-sm text-blue-700">
+                    현재 재고: {selectedProduct.current_stock}{selectedProduct.unit}
+                  </div>
+                </div>
+              )}
+            </div>
 
-          {selectedTransaction && selectedTransaction.product ? (
-            <div className="space-y-4">
-              {/* 선택된 거래 정보 */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <div className="flex items-start">
-                  <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5 mr-3" />
-                  <div className="flex-1">
-                    <h3 className="font-medium text-gray-900">
-                      {selectedTransaction.product.product_name}
-                    </h3>
-                    <p className="text-sm text-gray-600 mt-1">
-                      출고일: {selectedTransaction.date} | 
-                      출고 수량: {selectedTransaction.quantity}{selectedTransaction.product.unit}
-                    </p>
+            {/* 처리 유형 선택 */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-3">
+                처리 유형
+              </label>
+              <div className="grid grid-cols-2 gap-4">
+                {/* 좌측: 취소 */}
+                <div className="border rounded-lg p-3 bg-gray-50">
+                  <div className="font-medium text-gray-900 mb-2">취소</div>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      value="cancel"
+                      checked={processType === 'cancel'}
+                      onChange={(e) => setProcessType(e.target.value as 'cancel' | 'return-good' | 'return-damaged')}
+                      className="mr-2"
+                    />
+                    <span className="text-sm">취소 (재입고)</span>
+                  </label>
+                </div>
+
+                {/* 우측: 반품 */}
+                <div className="border rounded-lg p-3 bg-gray-50">
+                  <div className="font-medium text-gray-900 mb-2">반품</div>
+                  <div className="space-y-2">
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        value="return-good"
+                        checked={processType === 'return-good'}
+                        onChange={(e) => setProcessType(e.target.value as 'cancel' | 'return-good' | 'return-damaged')}
+                        className="mr-2"
+                      />
+                      <span className="text-sm">양호 - 재입고</span>
+                    </label>
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        value="return-damaged"
+                        checked={processType === 'return-damaged'}
+                        onChange={(e) => setProcessType(e.target.value as 'cancel' | 'return-good' | 'return-damaged')}
+                        className="mr-2"
+                      />
+                      <span className="text-sm">파손 - 폐기</span>
+                    </label>
                   </div>
                 </div>
               </div>
-
-              {/* 반품 수량 */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  반품 수량
-                </label>
-                <input
-                  type="number"
-                  value={returnQuantity}
-                  onChange={(e) => setReturnQuantity(parseInt(e.target.value) || 0)}
-                  min="1"
-                  max={selectedTransaction.quantity}
-                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  최대 {selectedTransaction.quantity}{selectedTransaction.product.unit}까지 반품 가능
-                </p>
-              </div>
-
-              {/* 반품 사유 */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  반품 사유 <span className="text-red-500">*</span>
-                </label>
-                <select
-                  value={returnReason}
-                  onChange={(e) => setReturnReason(e.target.value)}
-                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                  required
-                >
-                  <option value="">선택하세요</option>
-                  <option value="고객 변심">고객 변심</option>
-                  <option value="제품 불량">제품 불량</option>
-                  <option value="오배송">오배송</option>
-                  <option value="주문 취소">주문 취소</option>
-                  <option value="기타">기타</option>
-                </select>
-              </div>
-
-              {/* 메모 */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  메모
-                </label>
-                <textarea
-                  value={returnMemo}
-                  onChange={(e) => setReturnMemo(e.target.value)}
-                  placeholder="추가 메모를 입력하세요"
-                  rows={3}
-                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              {/* 버튼 */}
-              <div className="flex gap-3">
-                <button
-                  onClick={handleReturn}
-                  disabled={isProcessing}
-                  className={`flex-1 px-4 py-3 rounded-lg font-medium transition-colors ${
-                    isProcessing
-                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                      : 'bg-red-600 text-white hover:bg-red-700'
-                  }`}
-                >
-                  {isProcessing ? (
-                    <>처리 중...</>
-                  ) : (
-                    <>
-                      <Check className="inline h-5 w-5 mr-2" />
-                      반품 처리
-                    </>
-                  )}
-                </button>
-                <button
-                  onClick={cancelSelection}
-                  className="px-4 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-                >
-                  <X className="inline h-5 w-5 mr-2" />
-                  취소
-                </button>
-              </div>
             </div>
-          ) : (
-            <div className="text-center py-12 text-gray-500">
-              <RotateCcw className="h-12 w-12 text-gray-300 mx-auto mb-3" />
-              <p>왼쪽 테이블에서 반품할 거래를 선택하세요</p>
+
+            {/* 수량 입력 */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                수량
+              </label>
+              <input
+                type="number"
+                value={quantity}
+                onChange={(e) => setQuantity(Number(e.target.value))}
+                min="1"
+                max={selectedProduct?.current_stock || 9999}
+                className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+              />
             </div>
-          )}
+
+            {/* 처리 사유 */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                처리 사유
+              </label>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={3}
+                placeholder="처리 사유를 입력하세요"
+                className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* 처리 버튼 */}
+            <button
+              onClick={handleProcess}
+              disabled={isProcessing || !selectedProduct || !reason}
+              className={`w-full py-3 px-4 rounded-lg font-medium transition-colors ${
+                isProcessing || !selectedProduct || !reason
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
+              }`}
+            >
+              {isProcessing ? '처리 중...' : '처리하기'}
+            </button>
+          </div>
+        </div>
+
+        {/* 오른쪽: 최근 처리 내역 */}
+        <div className="lg:col-span-1">
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <h2 className="text-lg font-semibold mb-4">최근 처리 내역</h2>
+
+            {recentLogs.length > 0 ? (
+              <div className="space-y-3">
+                {recentLogs.map((log) => (
+                  <div key={log.id} className="border-l-4 border-blue-500 pl-3 py-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">{log.product_name}</span>
+                      <span className={`text-xs px-2 py-1 rounded-full ${
+                        log.process_type === '취소'
+                          ? 'bg-yellow-100 text-yellow-800'
+                          : 'bg-purple-100 text-purple-800'
+                      }`}>
+                        {log.process_type}
+                      </span>
+                    </div>
+                    <div className="text-sm text-gray-600 mt-1">
+                      수량: {log.quantity} | 상태: {log.status}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      {new Date(log.created_at).toLocaleString('ko-KR')}
+                    </div>
+                    {log.reason && (
+                      <div className="text-xs text-gray-600 mt-1 italic">
+                        "{log.reason}"
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-500 text-center py-4">
+                최근 처리 내역이 없습니다
+              </p>
+            )}
+          </div>
         </div>
       </div>
     </div>

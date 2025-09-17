@@ -2,10 +2,11 @@ import React, { useState, createContext, useContext, lazy, Suspense } from 'reac
 import { BrowserRouter } from 'react-router-dom';
 import { DataProvider } from './contexts/DataContext';
 import { ToastProvider } from './contexts/ToastContext';
+import { Toaster } from 'react-hot-toast';
 import { 
   Home, Package, Download, Upload, Settings, 
   History, RotateCcw, Plus, BarChart3, Menu, FileSpreadsheet, ShoppingCart,
-  FileText, ClipboardEdit, MapPin, BookOpen, Bell
+  FileText, ClipboardEdit, MapPin, BookOpen, Bell, Building2
 } from 'lucide-react';
 
 // 컴포넌트 임포트
@@ -41,6 +42,22 @@ const BatchProcess = lazy(() => import('./pages/BatchProcess'));
 const ReturnManagement = lazy(() => import('./pages/ReturnManagement'));
 const PurchaseOrder = lazy(() => import('./pages/PurchaseOrder'));
 const DailyClosing = lazy(() => import('./pages/DailyClosing'));
+const DailyLedger = lazy(() => import('./pages/DailyLedger'));
+const WarehouseManagement = lazy(() => import('./pages/WarehouseManagement'));
+
+// 누락되었던 페이지들 추가
+const IndividualProcess = lazy(() => import('./pages/IndividualProcess'));
+const CancelReturn = lazy(() => import('./pages/CancelReturn'));
+const ProductMove = lazy(() => import('./pages/ProductMove'));
+
+// 스케줄러 모니터링 페이지
+const SchedulerMonitoring = lazy(() => import('./pages/SchedulerMonitoring'));
+
+// 분석 관련 페이지들
+const TransactionSummary = lazy(() => import('./pages/TransactionSummary'));
+const PastQuantityLookup = lazy(() => import('./pages/PastQuantityLookup'));
+const InventoryAnalysis = lazy(() => import('./pages/InventoryAnalysis'));
+const SalesAnalysis = lazy(() => import('./pages/SalesAnalysis'));
 
 // 로딩 컴포넌트
 const Loading = () => (
@@ -56,6 +73,8 @@ const Loading = () => (
 interface AppContextType {
   activePage: string;
   setActivePage: (page: string) => void;
+  purchaseOrderData?: any;  // 발주 페이지로 전달할 데이터
+  setPurchaseOrderData: (data: any) => void;
 }
 
 // Context 생성
@@ -75,6 +94,15 @@ function App() {
   const [expandedMenus, setExpandedMenus] = useState<string[]>(['analysis']);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [purchaseOrderResetKey, setPurchaseOrderResetKey] = useState(0);
+  const [purchaseOrderData, setPurchaseOrderData] = useState<any>(null);
+  
+  // URL 경로에 따른 초기 페이지 설정
+  React.useEffect(() => {
+    const path = window.location.pathname;
+    if (path.includes('/daily-closing')) {
+      setActivePage('daily-closing');
+    }
+  }, []);
   
   // 메뉴 아이템 설정
   const menuItems: MenuItem[] = [
@@ -92,10 +120,11 @@ function App() {
       ]
     },
     { id: 'return-management', name: '취소 및 반품', icon: RotateCcw },
+    { id: 'warehouses', name: '창고 관리', icon: Building2 },
     { id: 'transfer', name: '제품 위치 이동', icon: MapPin },
     { id: 'daily-closing', name: '일일 수불부', icon: BookOpen },
     { id: 'stock-alert', name: '재고 부족 알림', icon: Bell },
-    { id: 'purchase-order', name: '발주', icon: ShoppingCart },
+    { id: 'purchase-order', name: '발주 상태 관리', icon: ShoppingCart },
     { id: 'history', name: '히스토리', icon: History },
     { 
       id: 'analysis',
@@ -111,14 +140,15 @@ function App() {
         { id: 'data-management', name: '데이터 관리' }
       ]
     },
-    { 
+    {
       id: 'settings',
-      name: '설정', 
+      name: '설정',
       icon: Settings,
       submenu: [
         { id: 'settings-general', name: '일반' },
         { id: 'settings-users', name: '사용자' },
-        { id: 'settings-notifications', name: '알림' }
+        { id: 'settings-notifications', name: '알림' },
+        { id: 'scheduler-monitoring', name: '스케줄러 모니터링' }
       ]
     }
   ];
@@ -130,10 +160,12 @@ function App() {
         return <Dashboard />;
       case 'products':
         return <ProductList />;
+      case 'warehouses':
+        return <WarehouseManagement />;
       case 'batch-process':
         return <BatchProcess />;
       case 'daily-closing':
-        return <DailyClosing />;
+        return <DailyLedger />;
       case 'receive':
         return <TransactionForm type="receive" />;
       case 'dispatch':
@@ -141,20 +173,24 @@ function App() {
       case 'adjustment':
         return <TransactionForm type="adjustment" />;
       case 'transfer':
-        return <TransactionForm type="transfer" />;
+        return <ProductMove />;
       case 'history':
         return <HistoryPage />;
       case 'purchase-order':
-        return <PurchaseOrder resetKey={purchaseOrderResetKey} />;
+        return <PurchaseOrder resetKey={purchaseOrderResetKey} initialData={purchaseOrderData} />;
       case 'return-management':
-        return <ReturnManagement />;
+        return <CancelReturn />;
       case 'stock-alert':
         return <StockAlert />;
       case 'analysis-summary':
+        return <TransactionSummary />;
       case 'past-quantity':
-      case 'analysis-dashboard':
+        return <PastQuantityLookup />;
       case 'inventory-analysis':
+        return <InventoryAnalysis />;
       case 'sales-analysis':
+        return <SalesAnalysis />;
+      case 'analysis-dashboard':
       case 'data-management':
       case 'adjustment-analysis':
         return <Analysis type={activePage} />;
@@ -162,6 +198,8 @@ function App() {
       case 'settings-users':
       case 'settings-notifications':
         return <SettingsPage type={activePage} />;
+      case 'scheduler-monitoring':
+        return <SchedulerMonitoring />;
       default:
         return <Dashboard />;
     }
@@ -171,7 +209,43 @@ function App() {
     <BrowserRouter>
       <DataProvider>
         <ToastProvider>
-          <AppContext.Provider value={{ activePage, setActivePage }}>
+          <AppContext.Provider value={{ activePage, setActivePage, purchaseOrderData, setPurchaseOrderData }}>
+            {/* 중앙화된 토스트 설정 */}
+            <Toaster
+              position="top-center"
+              reverseOrder={false}
+              gutter={8}
+              toastOptions={{
+                duration: 4000,
+                style: {
+                  padding: '16px',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  maxWidth: '500px',
+                },
+                success: {
+                  style: {
+                    background: '#10B981',
+                    color: '#fff',
+                  },
+                  iconTheme: {
+                    primary: '#fff',
+                    secondary: '#10B981',
+                  },
+                },
+                error: {
+                  style: {
+                    background: '#EF4444',
+                    color: '#fff',
+                  },
+                  iconTheme: {
+                    primary: '#fff',
+                    secondary: '#EF4444',
+                  },
+                },
+              }}
+            />
             <div className="flex h-screen bg-gray-50">
               {/* 사이드바 */}
               <Sidebar
@@ -183,8 +257,8 @@ function App() {
                 activeItem={activePage}
                 onItemClick={(item) => {
                   setActivePage(item.id);
-                  // 발주 메뉴를 클릭할 때마다 resetKey를 증가시켜 기본 페이지로 돌아가도록 함
-                  if (item.id === 'purchase-order') {
+                  // 발주 메뉴를 직접 클릭했을 때만 resetKey 증가 (purchaseOrderData가 없을 때만)
+                  if (item.id === 'purchase-order' && !purchaseOrderData) {
                     setPurchaseOrderResetKey(prev => prev + 1);
                   }
                 }}

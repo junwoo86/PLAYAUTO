@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class DailyLedgerBase(BaseModel):
     """일일 수불부 기본 스키마"""
     ledger_date: date
-    product_id: str
+    product_code: str
     beginning_stock: int
     total_inbound: int = 0
     total_outbound: int = 0
@@ -24,7 +24,6 @@ class DailyLedgerCreate(DailyLedgerBase):
 
 class ProductInfo(BaseModel):
     """제품 정보"""
-    id: str
     product_code: str
     product_name: str
     unit: str
@@ -37,4 +36,4 @@ class DailyLedgerResponse(DailyLedgerBase):
     product: Optional[ProductInfo] = None
     
     class Config:
-        orm_mode = True
+        from_attributes = True

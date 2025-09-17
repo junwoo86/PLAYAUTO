@@ -44,16 +44,26 @@ api.interceptors.response.use(
 // Product API
 export const productAPI = {
   // 모든 제품 조회
-  getAll: async (skip = 0, limit = 100) => {
-    const response = await api.get('/products', {
-      params: { skip, limit }
-    });
+  getAll: async (skip = 0, limit = 100, searchTerm?: string, category?: string, warehouseId?: string, isActive?: boolean) => {
+    const params: any = { skip, limit };
+    if (searchTerm) params.search = searchTerm;
+    if (category) params.category = category;
+    if (warehouseId) params.warehouse_id = warehouseId;
+    if (isActive !== undefined) params.is_active = isActive;
+
+    const response = await api.get('/products', { params });
     return response.data;
   },
 
   // 특정 제품 조회
   getById: async (id: string) => {
     const response = await api.get(`/products/${id}`);
+    return response.data;
+  },
+
+  // 제품 코드로 제품 조회
+  getByCode: async (productCode: string) => {
+    const response = await api.get(`/products/${productCode}`);
     return response.data;
   },
 
@@ -78,6 +88,14 @@ export const productAPI = {
   // 재고 부족 제품 조회
   getLowStock: async () => {
     const response = await api.get('/products/low-stock');
+    return response.data;
+  },
+
+  // 제품 코드 중복 검사
+  checkDuplicate: async (productCode: string, currentCode?: string) => {
+    const response = await api.get(`/products/check-duplicate/${productCode}`, {
+      params: currentCode ? { current_code: currentCode } : {}
+    });
     return response.data;
   }
 };
@@ -123,6 +141,12 @@ export const transactionAPI = {
       counts
     });
     return response.data;
+  },
+
+  // 거래 삭제
+  delete: async (id: string) => {
+    const response = await api.delete(`/transactions/${id}`);
+    return response.data;
   }
 };
 
@@ -164,6 +188,18 @@ export const purchaseOrderAPI = {
       receivedQuantities
     );
     return response.data;
+  },
+
+  // 구매 주문 업데이트
+  update: async (id: string, order: any) => {
+    const response = await api.put(`/purchase-orders/${id}`, order);
+    return response.data;
+  },
+
+  // 구매 주문 삭제
+  delete: async (id: string) => {
+    const response = await api.delete(`/purchase-orders/${id}`);
+    return response.data;
   }
 };
 
@@ -188,6 +224,79 @@ export const statisticsAPI = {
     const response = await api.get('/statistics/transactions', {
       params: { start_date: startDate, end_date: endDate }
     });
+    return response.data;
+  },
+
+  // 입출고 요약 분석
+  getTransactionSummary: async (days: number = 30) => {
+    const response = await api.get('/transactions/summary', {
+      params: { days }
+    });
+    return response.data;
+  },
+
+  // 재고 분석
+  getInventoryAnalysis: async () => {
+    const response = await api.get('/inventory/analysis');
+    return response.data;
+  },
+
+  // 과거 수량 조회
+  getPastQuantityAnalysis: async (productId?: string, days: number = 30) => {
+    const response = await api.get('/products/past-quantity', {
+      params: { product_id: productId, days }
+    });
+    return response.data;
+  },
+
+  // 매출 분석
+  getSalesAnalysis: async (days: number = 30) => {
+    const response = await api.get('/sales/analysis', {
+      params: { days }
+    });
+    return response.data;
+  }
+};
+
+// Product BOM API
+export const productBOMAPI = {
+  // BOM 목록 조회
+  getAll: async (parentProductCode?: string) => {
+    const params: any = {};
+    if (parentProductCode) params.parent_product_code = parentProductCode;
+
+    const response = await api.get('/product-bom', { params });
+    return response.data;
+  },
+
+  // BOM 일괄 생성/업데이트
+  bulkCreate: async (parentProductCode: string, boms: any[]) => {
+    // 먼저 기존 BOM 삭제
+    const existingBoms = await productBOMAPI.getAll(parentProductCode);
+    if (existingBoms.items && existingBoms.items.length > 0) {
+      for (const bom of existingBoms.items) {
+        await api.delete(`/product-bom/${bom.id}`);
+      }
+    }
+
+    // 새로운 BOM 생성
+    if (boms.length > 0) {
+      const bomData = boms.map(item => ({
+        parent_product_code: parentProductCode,
+        child_product_code: item.childProductCode,
+        quantity: item.quantity
+      }));
+
+      const response = await api.post('/product-bom/bulk', bomData);
+      return response.data;
+    }
+
+    return [];
+  },
+
+  // 세트 조립 가능 수량 조회
+  getSetProductStock: async (productCode: string) => {
+    const response = await api.get(`/product-bom/set-product-stock/${productCode}`);
     return response.data;
   }
 };
@@ -235,4 +344,5 @@ export const dataAPI = {
   }
 };
 
+export { api };
 export default api;

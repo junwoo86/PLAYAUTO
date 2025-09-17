@@ -42,7 +42,7 @@ class PurchaseOrderItem(BaseModel):
     po_id = Column(UUID(as_uuid=True), ForeignKey('purchase_orders.id'), nullable=False, index=True)
     
     # 제품 정보
-    product_id = Column(UUID(as_uuid=True), ForeignKey('products.id'), nullable=False, index=True)
+    product_code = Column(String(50), ForeignKey('products.product_code'), nullable=False, index=True)
     
     # 수량 및 가격
     ordered_quantity = Column(Integer, nullable=False)
@@ -55,7 +55,7 @@ class PurchaseOrderItem(BaseModel):
     
     # 관계
     purchase_order = relationship("PurchaseOrder", back_populates="items")
-    product = relationship("Product", back_populates="purchase_order_items")
+    product = relationship("Product", foreign_keys=[product_code], back_populates="purchase_order_items")
     
     def __repr__(self):
-        return f"<POItem PO:{self.po_id} Product:{self.product_id} Qty:{self.ordered_quantity}>"
+        return f"<POItem PO:{self.po_id} Product:{self.product_code} Qty:{self.ordered_quantity}>"

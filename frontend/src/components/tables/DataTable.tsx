@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-r
 // 테이블 컬럼 정의
 export interface TableColumn<T = any> {
   key: string;
-  header: string;
+  header: string | React.ReactNode;
   width?: string;
   align?: 'left' | 'center' | 'right';
   sortable?: boolean;

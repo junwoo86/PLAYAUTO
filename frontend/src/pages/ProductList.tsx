@@ -4,7 +4,8 @@ import {
   Wrench, AlertCircle, CheckCircle, XCircle,
   TrendingUp, TrendingDown, BarChart, Barcode,
   RefreshCw, MapPin, Save, X, Trash2, Search,
-  Calculator, Info, Clock, Calendar
+  Calculator, Info, Clock, Calendar, DollarSign,
+  AlertTriangle
 } from 'lucide-react';
 import debounce from 'lodash.debounce';
 import { saveAs } from 'file-saver';
@@ -18,12 +19,15 @@ import {
   SelectField,
   Alert,
   TextField,
-  TextareaField
+  TextareaField,
+  ConfirmDialog
 } from '../components';
 import { useData } from '../contexts/DataContext';
 import { useAppContext } from '../App';
 import { useToast } from '../contexts/ToastContext';
-import { productAPI, transactionAPI } from '../services/api';
+import { productAPI, transactionAPI, productBOMAPI } from '../services/api';
+import { formatPrice, parsePrice, validatePriceInput, CURRENCY_OPTIONS, Currency } from '../utils/currency';
+import { warehouseService, Warehouse } from '../services/api/warehouses';
 
 function ProductList() {
   const { assembleSet, disassembleSet, addTransaction, updateProduct, transactions } = useData();
@@ -35,6 +39,8 @@ function ProductList() {
   const [debouncedSearchValue, setDebouncedSearchValue] = useState('');
   const [showOnlyWithStock, setShowOnlyWithStock] = useState(false);
   const [showOnlyDiscrepancy, setShowOnlyDiscrepancy] = useState(false);
+  const [showOnlySetProducts, setShowOnlySetProducts] = useState(false); // 세트 상품 필터 추가
+  const [showDeletedProducts, setShowDeletedProducts] = useState(false); // 삭제 상품 필터 추가
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [showBOMModal, setShowBOMModal] = useState(false);
   const [assembleQuantity, setAssembleQuantity] = useState(1);
@@ -50,6 +56,24 @@ function ProductList() {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [safetyStockInfo, setSafetyStockInfo] = useState<string>('');
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('');
+  const [selectedCategory, setSelectedCategory] = useState<string>(''); // 카테고리 필터 추가
+  const [sortField, setSortField] = useState<string>(''); // 정렬 필드
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc'); // 정렬 방향
+  
+  // 제품 코드 중복 검사를 위한 상태
+  const [duplicateCheckStatus, setDuplicateCheckStatus] = useState<{
+    isChecking: boolean;
+    isDuplicate: boolean;
+    message: string;
+    lastCheckedCode: string;
+  }>({
+    isChecking: false,
+    isDuplicate: false,
+    message: '',
+    lastCheckedCode: ''
+  });
   
   // BOM 관리를 위한 추가 상태
   const [editingBOM, setEditingBOM] = useState<any[]>([]);
@@ -57,12 +81,57 @@ function ProductList() {
   const [bomSearchValue, setBomSearchValue] = useState('');
   const [selectedBOMProduct, setSelectedBOMProduct] = useState<any>(null);
   const [bomQuantity, setBomQuantity] = useState(1);
-  
+
+  // ConfirmDialog 상태
+  const [confirmDialog, setConfirmDialog] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+    variant: 'danger' as 'danger' | 'info' | 'warning'
+  });
+
   // 검색 디바운싱 적용
   const debouncedSearch = useCallback(
     debounce((value: string) => {
       setDebouncedSearchValue(value);
     }, 300),
+    []
+  );
+  
+  // 제품 코드 중복 검사 디바운싱
+  const debouncedDuplicateCheck = useCallback(
+    debounce(async (productCode: string, currentCode?: string) => {
+      if (!productCode || productCode.length < 2) {
+        setDuplicateCheckStatus({
+          isChecking: false,
+          isDuplicate: false,
+          message: '',
+          lastCheckedCode: productCode
+        });
+        return;
+      }
+
+      try {
+        setDuplicateCheckStatus(prev => ({ ...prev, isChecking: true }));
+        const result = await productAPI.checkDuplicate(productCode, currentCode);
+        
+        setDuplicateCheckStatus({
+          isChecking: false,
+          isDuplicate: result.isDuplicate,
+          message: result.message,
+          lastCheckedCode: productCode
+        });
+      } catch (error) {
+        console.error('중복 검사 실패:', error);
+        setDuplicateCheckStatus({
+          isChecking: false,
+          isDuplicate: false,
+          message: '중복 검사 중 오류가 발생했습니다',
+          lastCheckedCode: productCode
+        });
+      }
+    }, 500),
     []
   );
   
@@ -78,10 +147,11 @@ function ProductList() {
     productName: '',
     barcode: '',
     category: '',
-    brand: '',
     manufacturer: '',
     leadTime: 0,
     moq: 0,
+    purchaseCurrency: 'KRW' as Currency, // 구매 통화 단위
+    saleCurrency: 'KRW' as Currency, // 판매 통화 단위
     purchasePrice: 0,
     salePrice: 0,
     initialStock: 0,
@@ -89,20 +159,46 @@ function ProductList() {
     zoneId: '', // 구역ID 추가
     memo: '',
     supplier: '',
-    supplierContact: '',
-    supplierEmail: '', // 공급업체 담당자 이메일 추가
+    supplierEmail: '', // 공급업체 연락처
+    contactEmail: '', // 담당자 이메일
     orderEmailTemplate: '', // 발주 메일 템플릿 추가
     safetyStock: 0, // 안전 재고량 (기존 reorderPoint)
     minStock: 10,
     maxStock: 1000,
-    isSameAsManufacturer: false // 제조사와 동일 체크박스 상태 추가
+    isSameAsManufacturer: false, // 제조사와 동일 체크박스 상태 추가
+    warehouseId: '' // 창고 ID 추가
   });
+
+  // 고유 카테고리 목록 추출
+  const uniqueCategories = useMemo(() => {
+    const categories = products
+      .map(p => p.category)
+      .filter(c => c && c.trim() !== '')
+      .filter((value, index, self) => self.indexOf(value) === index)
+      .sort();
+    return categories;
+  }, [products]);
 
   // 제품 목록 조회
   const fetchProducts = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await productAPI.getAll(0, 100);
+      const params: any = {
+        skip: 0,
+        limit: 100,
+        is_active: showDeletedProducts ? false : true  // 삭제 상품 필터에 따라 is_active 설정
+      };
+      if (selectedWarehouseId) {
+        params.warehouse_id = selectedWarehouseId;
+      }
+      const response = await productAPI.getAll(
+        0,
+        100,
+        undefined,
+        undefined,
+        params.warehouse_id,
+        params.is_active  // is_active 파라미터 추가
+      );
       setProducts(response.data || []);
     } catch (error) {
       console.error('제품 조회 실패:', error);
@@ -110,16 +206,30 @@ function ProductList() {
     } finally {
       setIsLoading(false);
     }
-  }, [showError]);
+  }, [showError, selectedWarehouseId, showDeletedProducts]);
 
   // 제품별 거래 내역 조회
-  const fetchProductTransactions = useCallback(async (productId: string) => {
+  const fetchProductTransactions = useCallback(async (productCode: string) => {
     try {
       const response = await transactionAPI.getAll({
-        product_id: productId,
+        product_code: productCode,
         limit: 100
       });
-      return response.data || [];
+      
+      // API 응답을 프론트엔드에서 사용하는 필드명으로 매핑
+      const mappedData = response.data?.map((transaction: any) => ({
+        id: transaction.id,
+        date: transaction.transaction_date,
+        type: transaction.transaction_type,
+        quantity: transaction.quantity,
+        previousStock: transaction.previous_stock,
+        newStock: transaction.new_stock,
+        reason: transaction.reason,
+        memo: transaction.memo,
+        createdBy: transaction.created_by || '관리자'
+      })) || [];
+      
+      return mappedData;
     } catch (error) {
       console.error('거래 내역 조회 실패:', error);
       showError('거래 내역을 불러오는데 실패했습니다.');
@@ -128,6 +238,20 @@ function ProductList() {
   }, [showError]);
 
   // 컴포넌트 마운트 시 제품 목록 조회
+  // 창고 목록 조회
+  const fetchWarehouses = useCallback(async () => {
+    try {
+      const response = await warehouseService.getWarehouses({ is_active: true });
+      setWarehouses(response.items);
+    } catch (error) {
+      console.error('창고 목록 조회 실패:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchWarehouses();
+  }, [fetchWarehouses]);
+
   useEffect(() => {
     fetchProducts();
   }, [fetchProducts]);
@@ -137,27 +261,101 @@ function ProductList() {
   const filteredProducts = useMemo(() => {
     return products.filter(product => {
       const searchTerm = debouncedSearchValue.toLowerCase();
-      const matchesSearch = !searchTerm || 
+      const matchesSearch = !searchTerm ||
                             product.product_name?.toLowerCase().includes(searchTerm) ||
                             product.product_code?.toLowerCase().includes(searchTerm) ||
                             product.barcode?.toLowerCase().includes(searchTerm);
       const matchesStock = !showOnlyWithStock || product.current_stock > 0;
       const matchesDiscrepancy = !showOnlyDiscrepancy || product.discrepancy !== 0;
-      return matchesSearch && matchesStock && matchesDiscrepancy;
+      const matchesWarehouse = !selectedWarehouseId || product.warehouse_id === selectedWarehouseId;
+      const matchesCategory = !selectedCategory || product.category === selectedCategory;
+      const matchesSetProduct = !showOnlySetProducts || (product.bom && product.bom.length > 0);
+
+      // 디버깅용 로그
+      if (showOnlySetProducts) {
+        console.log(`Filtering ${product.product_name}: BOM=`, product.bom, 'matchesSetProduct=', matchesSetProduct);
+      }
+
+      return matchesSearch && matchesStock && matchesDiscrepancy && matchesWarehouse && matchesCategory && matchesSetProduct;
     });
-  }, [products, debouncedSearchValue, showOnlyWithStock, showOnlyDiscrepancy]);
+  }, [products, debouncedSearchValue, showOnlyWithStock, showOnlyDiscrepancy, selectedWarehouseId, selectedCategory, showOnlySetProducts]);
+
+  // 정렬된 제품 목록
+  const sortedProducts = useMemo(() => {
+    const sorted = [...filteredProducts];
+    
+    // 카테고리 우선순위 정렬 함수
+    const getCategoryPriority = (category: string) => {
+      if (category === '검사권') return 1;
+      if (category === '영양제') return 2;
+      return 3;
+    };
+    
+    sorted.sort((a, b) => {
+      // 선택된 필드로 정렬
+      if (sortField) {
+        let aValue = a[sortField];
+        let bValue = b[sortField];
+        
+        // null/undefined 처리
+        if (aValue === null || aValue === undefined) aValue = '';
+        if (bValue === null || bValue === undefined) bValue = '';
+        
+        // 숫자 필드인 경우
+        if (typeof aValue === 'number' && typeof bValue === 'number') {
+          return sortDirection === 'asc' ? aValue - bValue : bValue - aValue;
+        }
+        
+        // 문자열 필드인 경우
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        
+        if (sortDirection === 'asc') {
+          return aStr.localeCompare(bStr, 'ko');
+        } else {
+          return bStr.localeCompare(aStr, 'ko');
+        }
+      }
+      
+      // 기본 정렬: 카테고리 우선순위로 정렬
+      const categoryPriorityA = getCategoryPriority(a.category);
+      const categoryPriorityB = getCategoryPriority(b.category);
+      
+      if (categoryPriorityA !== categoryPriorityB) {
+        return categoryPriorityA - categoryPriorityB;
+      }
+      
+      // 카테고리가 같으면 제품코드 순
+      return a.product_code.localeCompare(b.product_code, 'ko');
+    });
+    
+    return sorted;
+  }, [filteredProducts, sortField, sortDirection]);
 
   // 세트 가능 수량 계산
   const calculatePossibleSets = (product: any) => {
     if (!product.bom || product.bom.length === 0) return null;
-    
+
+    console.log('Calculating possible sets for:', product.product_name);
+    console.log('BOM data:', product.bom);
+
     const possibleQuantities = product.bom.map((item: any) => {
-      const childProduct = products.find(p => p.id === item.childProductId);
+      // BOM 데이터 구조에 따라 child_product_code 또는 childProductCode 사용
+      const childCode = item.child_product_code || item.childProductCode;
+      const childProduct = products.find(p => p.product_code === childCode);
+
+      console.log(`Looking for child product: ${childCode}`);
+      console.log('Found product:', childProduct);
+
       if (!childProduct) return 0;
-      return Math.floor(childProduct.current_stock / item.quantity);
+      const possibleQty = Math.floor(childProduct.current_stock / item.quantity);
+      console.log(`${childCode}: stock=${childProduct.current_stock}, needed=${item.quantity}, possible=${possibleQty}`);
+      return possibleQty;
     });
-    
-    return Math.min(...possibleQuantities);
+
+    const result = possibleQuantities.length > 0 ? Math.min(...possibleQuantities) : 0;
+    console.log('Final possible sets:', result);
+    return result;
   };
   
   // SKU 자동 생성
@@ -246,33 +444,61 @@ function ProductList() {
   // 제품 클릭 핸들러 (수정 모드 진입)
   const handleProductClick = (product: any) => {
     setIsEditMode(true);
-    setEditingProductId(product.id);
+    setEditingProductId(product.product_code);
     setNewProduct({
       productCode: product.product_code || '',
       productName: product.product_name || '',
       barcode: product.barcode || '',
       category: product.category || '',
-      brand: product.brand || '',
       manufacturer: product.manufacturer || '',
       leadTime: product.lead_time_days || 0,
       moq: product.moq || 0,
-      purchasePrice: product.purchase_price || product.price || 0,
-      salePrice: product.sale_price || product.price || 0,
+      purchaseCurrency: product.purchase_currency || 'KRW',
+      saleCurrency: product.sale_currency || 'KRW',
+      purchasePrice: parseFloat(product.purchase_price) || 0,
+      salePrice: parseFloat(product.sale_price) || 0,
       initialStock: product.current_stock || 0,
       location: product.location || '기본 위치',
       zoneId: product.zone_id || '',
       memo: product.memo || '',
       supplier: product.supplier || '',
-      supplierContact: product.supplier_contact || '',
       supplierEmail: product.supplier_email || '',
+      contactEmail: product.contact_email || '',
       orderEmailTemplate: product.order_email_template || '',
       safetyStock: product.safety_stock || 0,
       minStock: product.min_stock || 10,
       maxStock: product.max_stock || 1000,
-      isSameAsManufacturer: product.manufacturer === product.supplier
+      isSameAsManufacturer: product.manufacturer === product.supplier,
+      warehouseId: product.warehouse_id || '' // 창고 ID 추가
+    });
+    // 편집 모드에서는 중복 검사 초기화
+    setDuplicateCheckStatus({
+      isChecking: false,
+      isDuplicate: false,
+      message: '',
+      lastCheckedCode: product.product_code || ''
     });
     setShowAddProductModal(true);
   };
+
+  // 개별 제품 업데이트 함수
+  const updateSingleProduct = useCallback(async (productCode: string) => {
+    try {
+      // 수정된 제품 정보 가져오기
+      const updatedProduct = await productAPI.getByCode(productCode);
+      
+      // 기존 목록에서 해당 제품만 업데이트
+      setProducts(prevProducts => 
+        prevProducts.map(product => 
+          product.product_code === productCode ? updatedProduct : product
+        )
+      );
+    } catch (error) {
+      console.error('제품 업데이트 실패:', error);
+      // 실패 시 전체 새로고침
+      await fetchProducts();
+    }
+  }, [fetchProducts]);
 
   // 제품 추가/수정 처리
   const handleAddProduct = async () => {
@@ -287,23 +513,34 @@ function ProductList() {
         const productData = {
           product_code: newProduct.productCode,
           product_name: newProduct.productName,
+          barcode: newProduct.barcode || null,
           category: newProduct.category || null,
           manufacturer: newProduct.manufacturer || null,
           supplier: newProduct.supplier || null,
           supplier_email: newProduct.supplierEmail || null,
+          contact_email: newProduct.contactEmail || null,
           zone_id: newProduct.zoneId || null,
+          warehouse_id: newProduct.warehouseId || null,
           unit: '개',
-          price: newProduct.salePrice,
+          purchase_currency: newProduct.purchaseCurrency,
+          sale_currency: newProduct.saleCurrency,
+          sale_price: newProduct.salePrice,
+          purchase_price: newProduct.purchasePrice,
           current_stock: newProduct.initialStock,
           safety_stock: newProduct.safetyStock,
           is_auto_calculated: safetyStockInfo ? true : false,
           moq: newProduct.moq,
           lead_time_days: newProduct.leadTime,
-          order_email_template: newProduct.orderEmailTemplate || null
+          order_email_template: newProduct.orderEmailTemplate || null,
+          memo: newProduct.memo || null
         };
-        await productAPI.update(editingProductId, productData);
+        // 제품 코드로 업데이트 (기존 product_code 사용)
+        const originalProduct = products.find(p => p.product_code === editingProductId);
+        await productAPI.update(originalProduct?.product_code || editingProductId, productData);
         showSuccess('제품이 수정되었습니다.');
-        await fetchProducts(); // 목록 새로고침
+        
+        // 개별 제품 업데이트 (위치 유지)
+        await updateSingleProduct(newProduct.productCode);
       } catch (error) {
         console.error('제품 수정 실패:', error);
         showError('제품 수정에 실패했습니다.');
@@ -314,22 +551,29 @@ function ProductList() {
         const productData = {
           product_code: newProduct.productCode,
           product_name: newProduct.productName,
+          barcode: newProduct.barcode || null,
           category: newProduct.category || null,
           manufacturer: newProduct.manufacturer || null,
           supplier: newProduct.supplier || null,
           supplier_email: newProduct.supplierEmail || null,
+          contact_email: newProduct.contactEmail || null,
           zone_id: newProduct.zoneId || null,
+          warehouse_id: newProduct.warehouseId || null,
           unit: '개',
-          price: newProduct.salePrice,
+          purchase_currency: newProduct.purchaseCurrency,
+          sale_currency: newProduct.saleCurrency,
+          sale_price: newProduct.salePrice,
+          purchase_price: newProduct.purchasePrice,
           current_stock: newProduct.initialStock,
           safety_stock: newProduct.safetyStock,
           moq: newProduct.moq,
           lead_time_days: newProduct.leadTime,
-          order_email_template: newProduct.orderEmailTemplate || null
+          order_email_template: newProduct.orderEmailTemplate || null,
+          memo: newProduct.memo || null
         };
         await productAPI.create(productData);
         showSuccess('제품이 추가되었습니다.');
-        await fetchProducts(); // 목록 새로고침
+        await fetchProducts(); // 새 제품은 전체 목록 새로고침
       } catch (error) {
         console.error('제품 추가 실패:', error);
         showError('제품 추가에 실패했습니다.');
@@ -350,10 +594,11 @@ function ProductList() {
       productName: '',
       barcode: '',
       category: '',
-      brand: '',
       manufacturer: '',
       leadTime: 0,
       moq: 0,
+      purchaseCurrency: 'KRW' as Currency,
+      saleCurrency: 'KRW' as Currency,
       purchasePrice: 0,
       salePrice: 0,
       initialStock: 0,
@@ -361,17 +606,37 @@ function ProductList() {
       zoneId: '',
       memo: '',
       supplier: '',
-      supplierContact: '',
       supplierEmail: '',
+      contactEmail: '',
       orderEmailTemplate: '',
       safetyStock: 0,
       minStock: 10,
       maxStock: 1000,
-      isSameAsManufacturer: false
+      isSameAsManufacturer: false,
+      warehouseId: '' // 창고 ID 추가
+    });
+    // 중복 검사 상태 초기화
+    setDuplicateCheckStatus({
+      isChecking: false,
+      isDuplicate: false,
+      message: '',
+      lastCheckedCode: ''
     });
   };
 
   // 제품 삭제 처리
+  // 컬럼 클릭 핸들러
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      // 같은 필드를 다시 클릭하면 방향 토글
+      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      // 새로운 필드를 클릭하면 오름차순으로 시작
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
   const handleDeleteProduct = async (productId: string) => {
     if (!window.confirm('정말 이 제품을 삭제하시겠습니까?')) {
       return;
@@ -388,54 +653,138 @@ function ProductList() {
   };
 
   const columns = [
-    { 
-      key: 'product_code', 
-      header: '상품코드',
-      render: (value: string, row: any) => (
+    {
+      key: 'category',
+      header: (
         <div 
-          className="flex items-center gap-2 cursor-pointer hover:text-blue-600"
-          onClick={() => handleProductClick(row)}
+          className="cursor-pointer flex items-center gap-1 hover:text-blue-600"
+          onClick={() => handleSort('category')}
         >
-          {row.bom && row.bom.length > 0 && (
-            <Layers className="text-blue-500" size={16} title="세트상품" />
+          카테고리
+          {sortField === 'category' && (
+            <span className="text-xs">
+              {sortDirection === 'asc' ? '▲' : '▼'}
+            </span>
           )}
-          <span className="font-medium underline">{value}</span>
+        </div>
+      ),
+      render: (_: any, row: any) => (
+        <div className={`text-sm font-medium ${row.is_active === false ? 'text-gray-400' : 'text-gray-600'}`}>
+          {row.category || '-'}
         </div>
       )
     },
     { 
-      key: 'product_name', 
-      header: '상품명',
-      render: (value: string, row: any) => (
-        <span 
-          className="cursor-pointer hover:text-blue-600 hover:underline"
-          onClick={() => handleProductClick(row)}
+      key: 'product_code', 
+      header: (
+        <div 
+          className="cursor-pointer flex items-center gap-1 hover:text-blue-600"
+          onClick={() => handleSort('product_name')}
         >
-          {value}
-        </span>
+          상품 정보
+          {sortField === 'product_name' && (
+            <span className="text-xs">
+              {sortDirection === 'asc' ? '▲' : '▼'}
+            </span>
+          )}
+        </div>
+      ),
+      render: (value: string, row: any) => (
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <div
+              className={`text-xl font-bold cursor-pointer hover:text-blue-600 ${row.is_active === false ? 'text-gray-400 line-through' : 'text-gray-900'}`}
+              onClick={() => handleProductClick(row)}
+            >
+              {row.product_name}
+            </div>
+            {row.is_active === false && (
+              <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-600 rounded">
+                삭제됨
+              </span>
+            )}
+          </div>
+          <div
+            className="flex items-center gap-2 cursor-pointer hover:text-blue-600"
+            onClick={() => handleProductClick(row)}
+          >
+            {row.bom && row.bom.length > 0 && (
+              <Layers className="text-blue-500" size={14} title="세트상품" />
+            )}
+            <span className="text-xs text-gray-500 underline">{value}</span>
+          </div>
+        </div>
       )
     },
-    { key: 'category', header: '카테고리' },
-    { 
-      key: 'zone_id', 
-      header: '구역ID',
-      render: (value: string | undefined) => (
-        <span className="font-mono text-sm">
-          {value || '-'}
-        </span>
-      )
+    {
+      key: 'supplier',
+      header: (
+        <div 
+          className="cursor-pointer flex items-center gap-1 hover:text-blue-600"
+          onClick={() => handleSort('supplier')}
+        >
+          공급업체
+          {sortField === 'supplier' && (
+            <span className="text-xs">
+              {sortDirection === 'asc' ? '▲' : '▼'}
+            </span>
+          )}
+        </div>
+      ),
+      render: (value: string | undefined, row: any) => {
+        if (!value) return <span className="text-gray-400">-</span>;
+        return (
+          <div className="space-y-1">
+            <div className="font-medium text-sm">{value}</div>
+            {(row.lead_time_days !== undefined && row.lead_time_days !== null) && (
+              <div className="text-xs text-gray-500">
+                리드타임: {row.lead_time_days}일
+              </div>
+            )}
+          </div>
+        );
+      }
     },
     { 
       key: 'current_stock', 
-      header: '현재 재고', 
+      header: (
+        <div 
+          className="cursor-pointer flex items-center gap-1 hover:text-blue-600"
+          onClick={() => handleSort('current_stock')}
+        >
+          재고 현황
+          {sortField === 'current_stock' && (
+            <span className="text-xs">
+              {sortDirection === 'asc' ? '▲' : '▼'}
+            </span>
+          )}
+        </div>
+      ), 
       align: 'center' as const,
       render: (value: number, row: any) => {
-        // 자동 발주점 체크
-        const needsReorder = row.safety_stock && value <= row.safety_stock;
+        const currentStock = value || 0;
+        const safetyStock = row.safety_stock || 0;
+        const needsReorder = safetyStock && currentStock <= safetyStock;
+        
+        // 재고 상태에 따른 색상 결정
+        let stockColor = 'text-gray-900'; // 정상
+        let bgColor = '';
+        if (currentStock === 0) {
+          stockColor = 'text-red-700';
+          bgColor = 'bg-red-50';
+        } else if (needsReorder) {
+          stockColor = 'text-orange-700';
+          bgColor = 'bg-orange-50';
+        } else if (currentStock > safetyStock * 2) {
+          stockColor = 'text-green-700';
+          bgColor = 'bg-green-50';
+        }
         
         return (
-          <div>
-            <span className="text-xl font-bold">{value ? value.toLocaleString() : 0}</span>
+          <div className={`p-2 rounded ${bgColor}`}>
+            <div className={`text-2xl font-bold ${stockColor}`}>
+              {currentStock.toLocaleString()}
+            </div>
             {needsReorder && (
               <div className="text-xs text-red-600 font-medium mt-1">
                 발주 필요
@@ -447,111 +796,110 @@ function ProductList() {
     },
     {
       key: 'safety_stock',
-      header: '안전 재고량',
+      header: (
+        <div 
+          className="cursor-pointer flex items-center gap-1 hover:text-blue-600"
+          onClick={() => handleSort('safety_stock')}
+        >
+          안전 재고량
+          {sortField === 'safety_stock' && (
+            <span className="text-xs">
+              {sortDirection === 'asc' ? '▲' : '▼'}
+            </span>
+          )}
+        </div>
+      ),
       align: 'center' as const,
       render: (value: number | undefined, row: any) => {
         const safetyStock = value || 0;
-        if (!safetyStock) return '-';
-        
-        // 현재 재고가 안전 재고량 이하인지 확인
-        const isLowStock = row.current_stock <= safetyStock;
         
         return (
-          <div className="text-center">
+          <div className="text-center space-y-1">
             <div className="flex items-center justify-center gap-1">
               {row.is_auto_calculated && (
                 <Calculator className="text-blue-500" size={14} title="자동 계산된 값" />
               )}
-              <div className={`font-medium ${isLowStock ? 'text-red-600' : ''}`}>
-                {safetyStock.toLocaleString()}
+              <div className="text-xl font-bold">
+                {safetyStock ? safetyStock.toLocaleString() : '-'}
               </div>
             </div>
-            {isLowStock && (
-              <div className="text-xs text-red-600 font-medium mt-1">
-                발주 필요
-              </div>
-            )}
             {row.moq && (
-              <div className="text-xs text-gray-500">MOQ: {row.moq}</div>
+              <div className="text-xs text-gray-500">
+                MOQ: {row.moq.toLocaleString()}
+              </div>
             )}
           </div>
         );
       }
     },
     {
-      key: 'supplier',
-      header: '공급업체',
-      render: (value: string | undefined, row: any) => {
-        if (!value) return '-';
+      key: 'location',
+      header: '위치',
+      render: (_: any, row: any) => (
+        <div className="space-y-1">
+          <div className="font-medium text-sm">
+            {row.warehouse_name || '미지정'}
+          </div>
+          {row.zone_id && (
+            <div className="text-xs text-gray-500">
+              구역: {row.zone_id}
+            </div>
+          )}
+        </div>
+      )
+    },
+    {
+      key: 'price',
+      header: (
+        <div 
+          className="cursor-pointer flex items-center gap-1 hover:text-blue-600"
+          onClick={() => handleSort('sale_price')}
+        >
+          판매가(VAT포함)
+          {sortField === 'sale_price' && (
+            <span className="text-xs">
+              {sortDirection === 'asc' ? '▲' : '▼'}
+            </span>
+          )}
+        </div>
+      ),
+      align: 'right' as const,
+      render: (_: any, row: any) => {
+        const saleCurrency = row.sale_currency || 'KRW';
         return (
-          <div>
-            <div className="font-medium">{value}</div>
-            {row.lead_time_days && (
-              <div className="text-xs text-gray-500">리드타임: {row.lead_time_days}일</div>
-            )}
+          <div className="text-right">
+            <div className="text-sm">
+              <span className="font-medium">{formatPrice(row.sale_price || 0, saleCurrency as Currency)}</span>
+            </div>
           </div>
         );
       }
     },
     {
       key: 'discrepancy',
-      header: '불일치',
+      header: '7일간 재고 불일치',
       align: 'center' as const,
-      render: (value: number, row: any) => {
-        // 마지막 조정 이후의 불일치만 표시
-        if (!row.lastAdjustmentDate) {
-          return <div className="flex justify-center">-</div>;
-        }
+      render: (_: any, row: any) => {
+        const hasDiscrepancy = row.has_pending_discrepancy && row.discrepancy !== 0;
         
-        if (value === 0) {
+        if (!hasDiscrepancy) {
           return (
             <div className="flex justify-center">
-              <CheckCircle className="text-green-500" size={20} />
+              <CheckCircle className="text-green-500" size={20} title="정상" />
             </div>
           );
         }
+        
+        // 불일치 값 표시
         return (
           <div className="flex flex-col items-center">
-            <div className={`font-bold ${value > 0 ? 'text-blue-600' : 'text-red-600'}`}>
-              {value > 0 ? '+' : ''}{value}
+            <div className={`font-bold text-lg ${row.discrepancy > 0 ? 'text-blue-600' : 'text-red-600'}`}>
+              {row.discrepancy > 0 ? '+' : ''}{row.discrepancy}
             </div>
-            <div className="text-xs text-gray-400">
-              {row.lastAdjustmentDate && 
-                new Date(row.lastAdjustmentDate).toLocaleDateString('ko-KR', { 
-                  month: '2-digit', 
-                  day: '2-digit' 
-                })
-              }
-            </div>
-          </div>
-        );
-      }
-    },
-    {
-      key: 'bom',
-      header: 'BOM',
-      align: 'center' as const,
-      render: (value: any, row: any) => {
-        const hasBOM = value && value.length > 0;
-        const possibleSets = hasBOM ? calculatePossibleSets(row) : null;
-        
-        return (
-          <div className="flex flex-col items-center gap-1">
-            <Button
-              size="sm"
-              variant={hasBOM ? "outline" : "ghost"}
-              onClick={() => {
-                setSelectedProduct(row);
-                setEditingBOM(row.bom || []);
-                setShowBOMModal(true);
-              }}
-            >
-              {hasBOM ? '구성 관리' : '구성 설정'}
-            </Button>
-            {possibleSets !== null && (
-              <span className="text-xs text-gray-500">
-                조립 가능: {possibleSets}세트
-              </span>
+            {row.discrepancy_count > 0 && (
+              <div className="text-xs text-gray-500">
+                7일간 조정: {row.discrepancy_count}건
+              </div>
             )}
           </div>
         );
@@ -559,38 +907,81 @@ function ProductList() {
     },
     {
       key: 'actions',
-      header: '작업',
+      header: '개별 조정 / 이력 / 세트 구성 관리',
       align: 'center' as const,
-      render: (_: any, row: any) => (
-        <div className="flex gap-2 justify-center">
-          <Button 
-            size="sm" 
-            variant="ghost" 
-            title="재고 조정"
-            onClick={() => {
-              setSelectedProduct(row);
-              setAdjustmentData({ quantity: 0, reason: '', memo: '' });
-              setShowAdjustmentModal(true);
-            }}
-          >
-            <Wrench size={16} />
-          </Button>
-          <Button 
-            size="sm" 
-            variant="ghost" 
-            title="이력 보기"
-            onClick={async () => {
-              // API에서 해당 제품의 거래 내역 가져오기
-              const productHistory = await fetchProductTransactions(row.id);
-              setSelectedProduct(row);
-              setSelectedProductHistory(productHistory);
-              setShowHistoryModal(true);
-            }}
-          >
-            <BarChart size={16} />
-          </Button>
-        </div>
-      )
+      render: (_: any, row: any) => {
+        const hasBOM = row.bom && row.bom.length > 0;
+        const possibleSets = hasBOM ? calculatePossibleSets(row) : null;
+
+        return (
+          <div className="flex flex-col gap-1 items-center">
+            <div className="flex gap-1">
+              {row.is_active !== false && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  title="재고 조정"
+                  onClick={() => {
+                    setSelectedProduct(row);
+                    setAdjustmentData({ quantity: 0, reason: '', memo: '' });
+                    setShowAdjustmentModal(true);
+                  }}
+                >
+                  <Wrench size={16} />
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                title="이력 보기"
+                onClick={async () => {
+                  // API에서 해당 제품의 거래 내역 가져오기
+                  const productHistory = await fetchProductTransactions(row.product_code);
+                  setSelectedProduct(row);
+                  setSelectedProductHistory(productHistory);
+                  setShowHistoryModal(true);
+                }}
+              >
+                <BarChart size={16} />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                title="세트 구성 관리"
+                onClick={async () => {
+                  setSelectedProduct(row);
+                  setEditingBOM([]);
+
+                  // BOM 데이터 로드
+                  try {
+                    const bomData = await productBOMAPI.getAll(row.product_code);
+                    if (bomData.items && bomData.items.length > 0) {
+                      const formattedBOM = bomData.items.map((item: any) => ({
+                        childProductCode: item.child_product_code,
+                        childProductName: item.child_product_name,
+                        quantity: item.quantity
+                      }));
+                      setEditingBOM(formattedBOM);
+                    }
+                  } catch (error) {
+                    console.error('BOM 조회 실패:', error);
+                  }
+
+                  setShowBOMModal(true);
+                }}
+                className={hasBOM ? 'text-blue-600 hover:text-blue-700' : ''}
+              >
+                <Layers size={hasBOM ? 20 : 16} className={hasBOM ? 'text-blue-600' : ''} />
+              </Button>
+            </div>
+            {hasBOM && (
+              <div className="text-xs text-gray-500">
+                세트 {possibleSets}개 가능
+              </div>
+            )}
+          </div>
+        );
+      }
     }
   ];
 
@@ -613,7 +1004,7 @@ function ProductList() {
               onClick={() => {
                 try {
                   // CSV 형식으로 제품 목록 다운로드
-                  const headers = ['제품코드', '제품명', '바코드', '카테고리', '현재재고', '최소재고', '최대재고', '가격'];
+                  const headers = ['제품코드', '제품명', '바코드', '카테고리', '현재재고', '최소재고', '최대재고', '판매가(VAT포함)'];
                   
                   // 데이터에 쉼표가 있을 경우를 대비해 따옴표로 감싸기
                   const escapeCSV = (value: any) => {
@@ -690,22 +1081,39 @@ function ProductList() {
         <div className="p-4 border-b">
           <div className="flex items-center gap-4">
             <div className="flex-1 flex gap-4">
-              <div className="flex-1">
+              <div className="w-40">
                 <SelectField
-                  label=""
+                  label="창고 선택"
                   name="location"
                   options={[
-                    { value: 'all', label: '모든 위치' },
-                    { value: 'main', label: '본사 창고' },
-                    { value: 'sub1', label: '지점 창고' }
+                    { value: '', label: '모든 창고' },
+                    ...warehouses.map(wh => ({
+                      value: wh.id,
+                      label: wh.name
+                    }))
                   ]}
-                  value="all"
-                  onChange={() => {}}
+                  value={selectedWarehouseId}
+                  onChange={(e) => setSelectedWarehouseId(e.target.value)}
+                />
+              </div>
+              <div className="w-40">
+                <SelectField
+                  label="카테고리 선택"
+                  name="category"
+                  options={[
+                    { value: '', label: '모든 카테고리' },
+                    ...Array.from(new Set(products.map(p => p.category).filter(Boolean))).sort().map(cat => ({
+                      value: cat,
+                      label: cat
+                    }))
+                  ]}
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
                 />
               </div>
               <div className="flex-1">
                 <TextField
-                  label=""
+                  label="상품 검색"
                   name="search"
                   placeholder="상품코드, 이름, 바코드 검색"
                   value={searchValue}
@@ -714,7 +1122,7 @@ function ProductList() {
                 />
               </div>
             </div>
-            <div className="w-28 flex items-center justify-center">
+            <div className="flex flex-col gap-2">
               <CheckboxField
                 label="재고 보유"
                 name="withStock"
@@ -722,14 +1130,40 @@ function ProductList() {
                 onChange={(e) => setShowOnlyWithStock(e.target.checked)}
                 className="whitespace-nowrap"
               />
+              <CheckboxField
+                label="세트 상품"
+                name="setProducts"
+                checked={showOnlySetProducts}
+                onChange={(e) => setShowOnlySetProducts(e.target.checked)}
+                className="whitespace-nowrap"
+              />
+              <CheckboxField
+                label="삭제 상품"
+                name="deletedProducts"
+                checked={showDeletedProducts}
+                onChange={(e) => {
+                  setShowDeletedProducts(e.target.checked);
+                  // 삭제 상품 필터를 켜면 다른 필터들은 끄기
+                  if (e.target.checked) {
+                    setShowOnlyWithStock(false);
+                    setShowOnlySetProducts(false);
+                  }
+                }}
+                className="whitespace-nowrap text-red-600"
+              />
             </div>
           </div>
         </div>
         
-        {filteredProducts.length > 0 ? (
+        {isLoading ? (
+          <div className="p-8 text-center">
+            <RefreshCw className="h-8 w-8 text-blue-500 animate-spin mx-auto mb-2" />
+            <p className="text-gray-500">제품 목록을 불러오는 중...</p>
+          </div>
+        ) : sortedProducts.length > 0 ? (
           <DataTable
             columns={columns}
-            data={filteredProducts}
+            data={sortedProducts}
           />
         ) : (
           <EmptyState
@@ -738,7 +1172,12 @@ function ProductList() {
             description="검색 조건을 변경하거나 새 제품을 추가해보세요"
             action={{
               label: '제품 추가',
-              onClick: () => {},
+              onClick: () => {
+                setIsEditMode(false);
+                setEditingProductId(null);
+                resetForm();
+                setShowAddProductModal(true);
+              },
               icon: Plus
             }}
           />
@@ -750,7 +1189,7 @@ function ProductList() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
             <h2 className="text-xl font-bold mb-4">
-              BOM 구성 관리 - {selectedProduct.productName}
+              세트 구성 관리 - {selectedProduct.product_name}
             </h2>
             
             {/* 현재 재고 상태 */}
@@ -758,7 +1197,7 @@ function ProductList() {
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <p className="text-sm text-gray-500">세트 재고</p>
-                  <p className="text-2xl font-bold">{selectedProduct.currentStock}</p>
+                  <p className="text-2xl font-bold">{selectedProduct.current_stock}</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-500">조립 가능</p>
@@ -767,9 +1206,9 @@ function ProductList() {
                   </p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">예상 재고</p>
+                  <p className="text-sm text-gray-500">예상 재고 최대량</p>
                   <p className="text-2xl font-bold text-blue-600">
-                    {selectedProduct.currentStock + (calculatePossibleSets(selectedProduct) || 0)}
+                    {selectedProduct.current_stock + (calculatePossibleSets(selectedProduct) || 0)}
                   </p>
                 </div>
               </div>
@@ -805,40 +1244,40 @@ function ProductList() {
                     {showBOMSearchDropdown && bomSearchValue && (
                       <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
                         {products
-                          .filter(p => 
-                            p.id !== selectedProduct.id && // 자기 자신 제외
-                            !editingBOM.some(b => b.childProductId === p.id) && // 이미 추가된 부품 제외
-                            (p.productName.toLowerCase().includes(bomSearchValue.toLowerCase()) ||
-                             p.productCode.toLowerCase().includes(bomSearchValue.toLowerCase()))
+                          .filter(p =>
+                            p.product_code !== selectedProduct.product_code && // 자기 자신 제외
+                            !editingBOM.some(b => b.childProductCode === p.product_code) && // 이미 추가된 부품 제외
+                            (p.product_name.toLowerCase().includes(bomSearchValue.toLowerCase()) ||
+                             p.product_code.toLowerCase().includes(bomSearchValue.toLowerCase()))
                           )
                           .slice(0, 10)
                           .map(product => (
                             <div
-                              key={product.id}
+                              key={product.product_code}
                               className="p-3 hover:bg-gray-50 cursor-pointer border-b last:border-b-0"
                               onClick={() => {
                                 setSelectedBOMProduct(product);
-                                setBomSearchValue(product.productName);
+                                setBomSearchValue(product.product_name);
                                 setShowBOMSearchDropdown(false);
                               }}
                             >
                               <div className="flex justify-between">
                                 <div>
-                                  <p className="font-medium">{product.productName}</p>
-                                  <p className="text-sm text-gray-500">{product.productCode}</p>
+                                  <p className="font-medium">{product.product_name}</p>
+                                  <p className="text-sm text-gray-500">{product.product_code}</p>
                                 </div>
                                 <div className="text-right">
-                                  <p className="text-sm font-semibold">{product.currentStock}개</p>
+                                  <p className="text-sm font-semibold">{product.current_stock}개</p>
                                   <p className="text-xs text-gray-500">재고</p>
                                 </div>
                               </div>
                             </div>
                           ))}
-                        {products.filter(p => 
-                          p.id !== selectedProduct.id &&
-                          !editingBOM.some(b => b.childProductId === p.id) &&
-                          (p.productName.toLowerCase().includes(bomSearchValue.toLowerCase()) ||
-                           p.productCode.toLowerCase().includes(bomSearchValue.toLowerCase()))
+                        {products.filter(p =>
+                          p.product_code !== selectedProduct.product_code &&
+                          !editingBOM.some(b => b.childProductCode === p.product_code) &&
+                          (p.product_name.toLowerCase().includes(bomSearchValue.toLowerCase()) ||
+                           p.product_code.toLowerCase().includes(bomSearchValue.toLowerCase()))
                         ).length === 0 && (
                           <div className="p-4 text-center text-gray-500">
                             검색 결과가 없습니다
@@ -863,8 +1302,8 @@ function ProductList() {
                     onClick={() => {
                       if (selectedBOMProduct && bomQuantity > 0) {
                         setEditingBOM([...editingBOM, {
-                          childProductId: selectedBOMProduct.id,
-                          childProductName: selectedBOMProduct.productName,
+                          childProductCode: selectedBOMProduct.product_code,
+                          childProductName: selectedBOMProduct.product_name,
                           quantity: bomQuantity
                         }]);
                         setBomSearchValue('');
@@ -890,13 +1329,13 @@ function ProductList() {
                   </div>
                 ) : (
                   editingBOM.map((item: any, index: number) => {
-                    const childProduct = products.find(p => p.id === item.childProductId);
+                    const childProduct = products.find(p => p.product_code === item.childProductCode);
                     return (
-                      <div key={item.childProductId} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                      <div key={item.childProductCode} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
                         <div className="flex-1">
                           <p className="font-medium">{item.childProductName}</p>
                           <p className="text-sm text-gray-500">
-                            재고: {childProduct?.currentStock || 0}개
+                            재고: {childProduct?.current_stock || 0}개
                           </p>
                         </div>
                         <div className="flex items-center gap-2">
@@ -942,26 +1381,62 @@ function ProductList() {
                     <input
                       type="number"
                       min="1"
-                      max={Math.max(calculatePossibleSets({...selectedProduct, bom: editingBOM}) || 0, selectedProduct.currentStock)}
+                      max={Math.max(calculatePossibleSets({...selectedProduct, bom: editingBOM}) || 0, selectedProduct.current_stock)}
                       value={assembleQuantity}
                       onChange={(e) => setAssembleQuantity(Number(e.target.value))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                     />
                   </div>
                   <Button
-                    onClick={() => {
-                      // 먼저 BOM 저장
-                      updateProduct(selectedProduct.id, { bom: editingBOM });
-                      // 조립 실행
-                      assembleSet(selectedProduct.id, assembleQuantity);
-                      showSuccess(`${assembleQuantity}개 세트가 조립되었습니다.`);
-                      // 모달 닫기
-                      setShowBOMModal(false);
-                      setSelectedProduct(null);
-                      setEditingBOM([]);
-                      setBomSearchValue('');
-                      setSelectedBOMProduct(null);
-                      setBomQuantity(1);
+                    onClick={async () => {
+                      try {
+                        // BOM 저장
+                        await productBOMAPI.bulkCreate(selectedProduct.product_code, editingBOM);
+
+                        // 트랜잭션 배열 준비
+                        const transactions = [];
+
+                        // 1. 세트 상품 IN 트랜잭션
+                        transactions.push({
+                          transaction_type: 'IN',
+                          product_code: selectedProduct.product_code,
+                          quantity: assembleQuantity,
+                          reason: 'set_assembly',
+                          memo: '세트 상품 조립',
+                          created_by: '관리자'
+                        });
+
+                        // 2. 각 구성품 OUT 트랜잭션
+                        for (const item of editingBOM) {
+                          transactions.push({
+                            transaction_type: 'OUT',
+                            product_code: item.childProductCode,
+                            quantity: item.quantity * assembleQuantity,
+                            reason: 'set_assembly',
+                            memo: `[${selectedProduct.product_name}]_세트 상품 조립`,
+                            created_by: '관리자'
+                          });
+                        }
+
+                        // 일괄 트랜잭션 생성
+                        await transactionAPI.batchCreate(transactions);
+
+                        showSuccess(`${assembleQuantity}개 세트가 조립되었습니다.`);
+
+                        // 제품 목록 새로고침
+                        await fetchProducts();
+
+                        // 모달 닫기
+                        setShowBOMModal(false);
+                        setSelectedProduct(null);
+                        setEditingBOM([]);
+                        setBomSearchValue('');
+                        setSelectedBOMProduct(null);
+                        setBomQuantity(1);
+                      } catch (error) {
+                        console.error('세트 조립 실패:', error);
+                        showError('세트 조립에 실패했습니다.');
+                      }
                     }}
                     disabled={(calculatePossibleSets({...selectedProduct, bom: editingBOM}) || 0) < assembleQuantity}
                     icon={TrendingUp}
@@ -970,21 +1445,57 @@ function ProductList() {
                   </Button>
                   <Button
                     variant="outline"
-                    onClick={() => {
-                      // 먼저 BOM 저장
-                      updateProduct(selectedProduct.id, { bom: editingBOM });
-                      // 해체 실행
-                      disassembleSet(selectedProduct.id, assembleQuantity);
-                      showSuccess(`${assembleQuantity}개 세트가 해체되었습니다.`);
-                      // 모달 닫기
-                      setShowBOMModal(false);
-                      setSelectedProduct(null);
-                      setEditingBOM([]);
-                      setBomSearchValue('');
-                      setSelectedBOMProduct(null);
-                      setBomQuantity(1);
+                    onClick={async () => {
+                      try {
+                        // BOM 저장
+                        await productBOMAPI.bulkCreate(selectedProduct.product_code, editingBOM);
+
+                        // 트랜잭션 배열 준비
+                        const transactions = [];
+
+                        // 1. 세트 상품 OUT 트랜잭션
+                        transactions.push({
+                          transaction_type: 'OUT',
+                          product_code: selectedProduct.product_code,
+                          quantity: assembleQuantity,
+                          reason: 'set_disassembly',
+                          memo: '세트 상품 해체',
+                          created_by: '관리자'
+                        });
+
+                        // 2. 각 구성품 IN 트랜잭션
+                        for (const item of editingBOM) {
+                          transactions.push({
+                            transaction_type: 'IN',
+                            product_code: item.childProductCode,
+                            quantity: item.quantity * assembleQuantity,
+                            reason: 'set_disassembly',
+                            memo: `[${selectedProduct.product_name}]_세트 상품 해체`,
+                            created_by: '관리자'
+                          });
+                        }
+
+                        // 일괄 트랜잭션 생성
+                        await transactionAPI.batchCreate(transactions);
+
+                        showSuccess(`${assembleQuantity}개 세트가 해체되었습니다.`);
+
+                        // 제품 목록 새로고침
+                        await fetchProducts();
+
+                        // 모달 닫기
+                        setShowBOMModal(false);
+                        setSelectedProduct(null);
+                        setEditingBOM([]);
+                        setBomSearchValue('');
+                        setSelectedBOMProduct(null);
+                        setBomQuantity(1);
+                      } catch (error) {
+                        console.error('세트 해체 실패:', error);
+                        showError('세트 해체에 실패했습니다.');
+                      }
                     }}
-                    disabled={selectedProduct.currentStock < assembleQuantity}
+                    disabled={selectedProduct.current_stock < assembleQuantity}
                     icon={TrendingDown}
                   >
                     세트 해체
@@ -1037,16 +1548,25 @@ function ProductList() {
                   취소
                 </Button>
                 <Button
-                  onClick={() => {
-                    // BOM 저장
-                    updateProduct(selectedProduct.id, { bom: editingBOM });
-                    showSuccess('BOM 구성이 저장되었습니다.');
-                    setShowBOMModal(false);
-                    setSelectedProduct(null);
-                    setEditingBOM([]);
-                    setBomSearchValue('');
-                    setSelectedBOMProduct(null);
-                    setBomQuantity(1);
+                  onClick={async () => {
+                    try {
+                      // BOM 저장
+                      await productBOMAPI.bulkCreate(selectedProduct.product_code, editingBOM);
+                      showSuccess('BOM 구성이 저장되었습니다.');
+
+                      // 제품 목록 새로고침
+                      await fetchProducts();
+
+                      setShowBOMModal(false);
+                      setSelectedProduct(null);
+                      setEditingBOM([]);
+                      setBomSearchValue('');
+                      setSelectedBOMProduct(null);
+                      setBomQuantity(1);
+                    } catch (error) {
+                      console.error('BOM 저장 실패:', error);
+                      showError('BOM 저장에 실패했습니다.');
+                    }
                   }}
                   icon={Save}
                 >
@@ -1069,7 +1589,7 @@ function ProductList() {
                 onClick={() => {
                   if (isEditMode && editingProductId) {
                     // 수정 모드에서는 원래 데이터로 복원
-                    const originalProduct = products.find(p => p.id === editingProductId);
+                    const originalProduct = products.find(p => p.product_code === editingProductId);
                     if (originalProduct) {
                       handleProductClick(originalProduct);
                     }
@@ -1090,23 +1610,72 @@ function ProductList() {
                 <h3 className="text-lg font-semibold mb-4 text-gray-700">제품 정보</h3>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="col-span-2">
-                    <TextField
-                      label="SKU"
-                      name="productCode"
-                      value={newProduct.productCode}
-                      onChange={(e) => setNewProduct({...newProduct, productCode: e.target.value})}
-                      placeholder="제품 코드를 입력하세요"
-                      required
-                      action={
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => setNewProduct({...newProduct, productCode: generateSKU()})}
-                        >
-                          자동 생성
-                        </Button>
-                      }
-                    />
+                    <div className="space-y-2">
+                      <TextField
+                        label="SKU"
+                        name="productCode"
+                        value={newProduct.productCode}
+                        onChange={(e) => {
+                          const newCode = e.target.value;
+                          setNewProduct({...newProduct, productCode: newCode});
+                          
+                          // 편집 모드에서는 현재 제품 코드를 제외하고 검사
+                          const originalCode = isEditMode && editingProductId ? 
+                            products.find(p => p.product_code === editingProductId)?.product_code : 
+                            undefined;
+                          
+                          // 중복 검사 실행
+                          debouncedDuplicateCheck(newCode, originalCode);
+                        }}
+                        placeholder="제품 코드를 입력하세요"
+                        required
+                        className={`${
+                          duplicateCheckStatus.isDuplicate && 
+                          duplicateCheckStatus.lastCheckedCode === newProduct.productCode
+                            ? 'border-red-500 focus:ring-red-500 focus:border-red-500'
+                            : duplicateCheckStatus.message && 
+                              !duplicateCheckStatus.isDuplicate && 
+                              duplicateCheckStatus.lastCheckedCode === newProduct.productCode
+                              ? 'border-green-500 focus:ring-green-500 focus:border-green-500'
+                              : ''
+                        }`}
+                        action={
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const newCode = generateSKU();
+                              setNewProduct({...newProduct, productCode: newCode});
+                              debouncedDuplicateCheck(newCode, isEditMode && editingProductId ? 
+                                products.find(p => p.product_code === editingProductId)?.product_code : undefined);
+                            }}
+                          >
+                            자동 생성
+                          </Button>
+                        }
+                      />
+                      
+                      {/* 중복 검사 결과 표시 */}
+                      {duplicateCheckStatus.isChecking && duplicateCheckStatus.lastCheckedCode === newProduct.productCode && (
+                        <div className="flex items-center gap-2 text-sm text-gray-500">
+                          <RefreshCw className="animate-spin" size={14} />
+                          <span>중복 검사 중...</span>
+                        </div>
+                      )}
+                      
+                      {!duplicateCheckStatus.isChecking && duplicateCheckStatus.message && duplicateCheckStatus.lastCheckedCode === newProduct.productCode && (
+                        <div className={`flex items-center gap-2 text-sm ${
+                          duplicateCheckStatus.isDuplicate ? 'text-red-600' : 'text-green-600'
+                        }`}>
+                          {duplicateCheckStatus.isDuplicate ? (
+                            <XCircle size={14} />
+                          ) : (
+                            <CheckCircle size={14} />
+                          )}
+                          <span>{duplicateCheckStatus.message}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   
                   <div className="col-span-2">
@@ -1146,20 +1715,21 @@ function ProductList() {
               <div>
                 <h3 className="text-lg font-semibold mb-4 text-gray-700">제품 속성</h3>
                 <div className="grid grid-cols-2 gap-4">
-                  <TextField
-                    label="카테고리"
-                    name="category"
-                    value={newProduct.category}
-                    onChange={(e) => setNewProduct({...newProduct, category: e.target.value})}
-                    placeholder="텍스트 입력"
-                  />
-                  <TextField
-                    label="브랜드"
-                    name="brand"
-                    value={newProduct.brand}
-                    onChange={(e) => setNewProduct({...newProduct, brand: e.target.value})}
-                    placeholder="텍스트 입력"
-                  />
+                  <div>
+                    <TextField
+                      label="카테고리"
+                      name="category"
+                      value={newProduct.category}
+                      onChange={(e) => setNewProduct({...newProduct, category: e.target.value})}
+                      placeholder="기존 카테고리를 선택하거나 새로 입력"
+                      list="category-options"
+                    />
+                    <datalist id="category-options">
+                      {uniqueCategories.map((category) => (
+                        <option key={category} value={category} />
+                      ))}
+                    </datalist>
+                  </div>
                   <TextField
                     label="제조사"
                     name="manufacturer"
@@ -1212,10 +1782,11 @@ function ProductList() {
                   </div>
                   <TextField
                     label="공급업체 연락처"
-                    name="supplierContact"
-                    value={newProduct.supplierContact}
-                    onChange={(e) => setNewProduct({...newProduct, supplierContact: e.target.value})}
-                    placeholder="전화번호 또는 이메일"
+                    name="supplierEmail"
+                    value={newProduct.supplierEmail}
+                    onChange={(e) => setNewProduct({...newProduct, supplierEmail: e.target.value})}
+                    placeholder="supplier@email.com"
+                    hint="공급업체 담당자 연락처"
                   />
                   <TextField
                     label="MOQ (최소발주수량)"
@@ -1270,6 +1841,20 @@ function ProductList() {
                       }
                     />
                   </div>
+                  <SelectField
+                    label="창고"
+                    name="warehouseId"
+                    options={[
+                      { value: '', label: '창고 선택' },
+                      ...warehouses.map(wh => ({
+                        value: wh.id,
+                        label: wh.name
+                      }))
+                    ]}
+                    value={newProduct.warehouseId}
+                    onChange={(e) => setNewProduct({...newProduct, warehouseId: e.target.value})}
+                    required
+                  />
                   <TextField
                     label="구역ID"
                     name="zoneId"
@@ -1280,12 +1865,12 @@ function ProductList() {
                   />
                   <TextField
                     label="담당자 이메일"
-                    name="supplierEmail"
+                    name="contactEmail"
                     type="email"
-                    value={newProduct.supplierEmail}
-                    onChange={(e) => setNewProduct({...newProduct, supplierEmail: e.target.value})}
-                    placeholder="supplier@email.com"
-                    hint="공급업체 발주 담당자 이메일"
+                    value={newProduct.contactEmail}
+                    onChange={(e) => setNewProduct({...newProduct, contactEmail: e.target.value})}
+                    placeholder="contact@email.com"
+                    hint="내부 담당자 이메일"
                   />
                 </div>
                 
@@ -1324,23 +1909,42 @@ function ProductList() {
               {/* 가격 정보 섹션 */}
               <div>
                 <h3 className="text-lg font-semibold mb-4 text-gray-700">가격 정보</h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <TextField
-                    label="구매가"
-                    name="purchasePrice"
-                    type="number"
-                    value={newProduct.purchasePrice}
-                    onChange={(e) => setNewProduct({...newProduct, purchasePrice: parseFloat(e.target.value) || 0})}
-                    placeholder="0"
-                  />
-                  <TextField
-                    label="판매가"
-                    name="salePrice"
-                    type="number"
-                    value={newProduct.salePrice}
-                    onChange={(e) => setNewProduct({...newProduct, salePrice: parseFloat(e.target.value) || 0})}
-                    placeholder="0"
-                  />
+                <div className="space-y-4">
+                  {/* 판매가 정보 */}
+                  <div className="border rounded-lg p-4 bg-gray-50">
+                    <h4 className="font-medium mb-3 text-gray-600">판매가(VAT포함)</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <SelectField
+                        label="판매 통화"
+                        name="saleCurrency"
+                        value={newProduct.saleCurrency}
+                        onChange={(e) => setNewProduct({...newProduct, saleCurrency: e.target.value as Currency})}
+                        options={CURRENCY_OPTIONS}
+                        icon={DollarSign}
+                      />
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          판매가 {newProduct.saleCurrency === 'KRW' ? '(원)' : '(달러)'}
+                        </label>
+                        <input
+                          type="text"
+                          value={newProduct.saleCurrency === 'KRW' 
+                            ? Math.round(Number(newProduct.salePrice) || 0).toString() 
+                            : (Number(newProduct.salePrice) || 0).toFixed(2)}
+                          onChange={(e) => {
+                            const validated = validatePriceInput(e.target.value, newProduct.saleCurrency);
+                            const parsed = parseFloat(validated) || 0;
+                            setNewProduct({...newProduct, salePrice: parsed});
+                          }}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder={newProduct.saleCurrency === 'KRW' ? '0' : '0.00'}
+                        />
+                        <div className="mt-1 text-sm text-gray-500">
+                          {formatPrice(newProduct.salePrice || 0, newProduct.saleCurrency)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1383,26 +1987,111 @@ function ProductList() {
             </div>
 
             {/* 버튼 영역 */}
-            <div className="flex justify-end gap-2 mt-6 pt-4 border-t">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setShowAddProductModal(false);
-                  setIsEditMode(false);
-                  setEditingProductId(null);
-                  setSafetyStockInfo('');
-                  resetForm();
-                }}
-              >
-                취소
-              </Button>
-              <Button
-                icon={Save}
-                onClick={handleAddProduct}
-                disabled={!newProduct.productCode || !newProduct.productName}
-              >
-                {isEditMode ? '수정 완료' : '입력 완료'}
-              </Button>
+            <div className="flex justify-between items-center gap-2 mt-6 pt-4 border-t">
+              {/* 왼쪽: 삭제/활성화 버튼 */}
+              <div>
+                {isEditMode && editingProductId && (() => {
+                  const currentProduct = products.find(p => p.product_code === editingProductId);
+                  return currentProduct?.is_active === false ? (
+                    // 활성화 버튼 (비활성 상품)
+                    <button
+                      onClick={() => {
+                        const product = products.find(p => p.product_code === editingProductId);
+                        setConfirmDialog({
+                          isOpen: true,
+                          title: '제품 활성화',
+                          message: `"${product?.product_name}" 제품을 다시 활성화하시겠습니까?`,
+                          variant: 'info',
+                          onConfirm: async () => {
+                            try {
+                              await productAPI.update(editingProductId, {
+                                is_active: true
+                              });
+                              showSuccess('제품이 활성화되었습니다.');
+                              setShowAddProductModal(false);
+                              setIsEditMode(false);
+                              setEditingProductId(null);
+                              resetForm();
+                              await fetchProducts();
+                            } catch (error) {
+                              console.error('제품 활성화 실패:', error);
+                              showError('제품 활성화에 실패했습니다.');
+                            }
+                            setConfirmDialog({ ...confirmDialog, isOpen: false });
+                          }
+                        });
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:text-blue-700 border border-blue-300 hover:border-blue-400 rounded-lg font-medium transition-all hover:bg-blue-50"
+                    >
+                      <CheckCircle size={18} />
+                      <span>활성화</span>
+                    </button>
+                  ) : (
+                    // 삭제 버튼 (활성 상품)
+                    <Button
+                      variant="outline"
+                      icon={Trash2}
+                      onClick={() => {
+                        const product = products.find(p => p.product_code === editingProductId);
+                        setConfirmDialog({
+                          isOpen: true,
+                          title: '제품 삭제',
+                          message: `정말로 "${product?.product_name}" 제품을 삭제하시겠습니까?\n\n삭제된 제품은 '삭제 상품' 필터를 통해 확인 및 복구할 수 있습니다.`,
+                          variant: 'danger',
+                          onConfirm: async () => {
+                            try {
+                              await productAPI.update(editingProductId, {
+                                is_active: false
+                              });
+                              showSuccess('제품이 삭제되었습니다.');
+                              setShowAddProductModal(false);
+                              setIsEditMode(false);
+                              setEditingProductId(null);
+                              resetForm();
+                              await fetchProducts();
+                            } catch (error) {
+                              console.error('제품 삭제 실패:', error);
+                              showError('제품 삭제에 실패했습니다.');
+                            }
+                            setConfirmDialog({ ...confirmDialog, isOpen: false });
+                          }
+                        });
+                      }}
+                      className="text-red-600 hover:text-red-700"
+                    >
+                      삭제
+                    </Button>
+                  );
+                })()}
+              </div>
+
+              {/* 오른쪽: 취소, 수정완료 버튼 */}
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowAddProductModal(false);
+                    setIsEditMode(false);
+                    setEditingProductId(null);
+                    setSafetyStockInfo('');
+                    resetForm();
+                  }}
+                >
+                  취소
+                </Button>
+                <Button
+                  icon={Save}
+                  onClick={handleAddProduct}
+                  disabled={
+                    !newProduct.productCode ||
+                    !newProduct.productName ||
+                    duplicateCheckStatus.isChecking ||
+                    (duplicateCheckStatus.isDuplicate && duplicateCheckStatus.lastCheckedCode === newProduct.productCode)
+                  }
+                >
+                  {isEditMode ? '수정 완료' : '입력 완료'}
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -1427,19 +2116,19 @@ function ProductList() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-sm text-gray-600">제품명</p>
-                  <p className="font-semibold">{selectedProduct.productName}</p>
+                  <p className="font-semibold">{selectedProduct.product_name}</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">제품 코드</p>
-                  <p className="font-semibold">{selectedProduct.productCode}</p>
+                  <p className="font-semibold">{selectedProduct.product_code}</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">현재 재고</p>
-                  <p className="font-semibold text-blue-600">{selectedProduct.currentStock}개</p>
+                  <p className="font-semibold text-blue-600">{selectedProduct.current_stock}개</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">최소 재고</p>
-                  <p className="font-semibold">{selectedProduct.minStock}개</p>
+                  <p className="font-semibold">{selectedProduct.safety_stock || 0}개</p>
                 </div>
               </div>
             </div>
@@ -1461,15 +2150,15 @@ function ProductList() {
                   placeholder="실사 확인된 실제 재고 수량을 입력하세요"
                   min="0"
                 />
-                {adjustmentData.quantity > 0 && adjustmentData.quantity !== selectedProduct.currentStock && (
+                {adjustmentData.quantity > 0 && adjustmentData.quantity !== selectedProduct.current_stock && (
                   <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
                     <p className={`text-sm font-medium ${
-                      adjustmentData.quantity > selectedProduct.currentStock ? 'text-green-600' : 'text-red-600'
+                      adjustmentData.quantity > selectedProduct.current_stock ? 'text-green-600' : 'text-red-600'
                     }`}>
-                      불일치: {adjustmentData.quantity > selectedProduct.currentStock ? '+' : ''}{adjustmentData.quantity - selectedProduct.currentStock}개
+                      불일치: {adjustmentData.quantity > selectedProduct.current_stock ? '+' : ''}{adjustmentData.quantity - selectedProduct.current_stock}개
                     </p>
                     <p className="text-xs text-gray-600 mt-1">
-                      현재 재고({selectedProduct.currentStock}개) → 실제 재고({adjustmentData.quantity}개)
+                      현재 재고({selectedProduct.current_stock}개) → 실제 재고({adjustmentData.quantity}개)
                     </p>
                   </div>
                 )}
@@ -1522,7 +2211,7 @@ function ProductList() {
                     showError('실제 재고 수량을 입력해주세요.');
                     return;
                   }
-                  if (adjustmentData.quantity === selectedProduct.currentStock) {
+                  if (adjustmentData.quantity === selectedProduct.current_stock) {
                     showWarning('현재 재고와 동일합니다. 조정이 필요하지 않습니다.');
                     return;
                   }
@@ -1532,12 +2221,12 @@ function ProductList() {
                   }
 
                   // 불일치 수량 계산 (실제 재고 - 현재 재고)
-                  const discrepancy = adjustmentData.quantity - selectedProduct.currentStock;
+                  const discrepancy = adjustmentData.quantity - selectedProduct.current_stock;
 
                   // API를 통한 재고 조정
                   const adjustTransaction = {
                     transaction_type: 'ADJUST',
-                    product_id: selectedProduct.id,
+                    product_code: selectedProduct.product_code,
                     quantity: discrepancy, // 차이값을 기록
                     reason: adjustmentData.reason,
                     memo: adjustmentData.memo || `실사 재고: ${adjustmentData.quantity}개 (불일치: ${discrepancy > 0 ? '+' : ''}${discrepancy}개)`,
@@ -1547,7 +2236,9 @@ function ProductList() {
                   try {
                     await transactionAPI.create(adjustTransaction);
                     showSuccess('재고 조정이 완료되었습니다.');
-                    await fetchProducts(); // 제품 목록 새로고침
+                    
+                    // 개별 제품 업데이트 (위치 유지)
+                    await updateSingleProduct(selectedProduct.product_code);
                     setShowAdjustmentModal(false);
                     setAdjustmentData({ quantity: 0, reason: '', memo: '' });
                   } catch (error) {
@@ -1555,7 +2246,7 @@ function ProductList() {
                     showError('재고 조정에 실패했습니다.');
                   }
                 }}
-                disabled={adjustmentData.quantity === 0 || adjustmentData.quantity === selectedProduct.currentStock || !adjustmentData.reason || adjustmentData.memo.length < 10}
+                disabled={adjustmentData.quantity === 0 || adjustmentData.quantity === selectedProduct.current_stock || !adjustmentData.reason || adjustmentData.memo.length < 10}
               >
                 조정 완료
               </Button>
@@ -1678,6 +2369,18 @@ function ProductList() {
           </div>
         </div>
       )}
+
+      {/* ConfirmDialog */}
+      <ConfirmDialog
+        isOpen={confirmDialog.isOpen}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        variant={confirmDialog.variant}
+        confirmText={confirmDialog.variant === 'info' ? '활성화' : '삭제'}
+        cancelText="취소"
+        onConfirm={confirmDialog.onConfirm}
+        onCancel={() => setConfirmDialog({ ...confirmDialog, isOpen: false })}
+      />
     </div>
   );
 }

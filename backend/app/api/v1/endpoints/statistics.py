@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
+import random
 
 from app.api.deps import get_db
 from app.models.product import Product
@@ -49,15 +50,71 @@ def get_dashboard_stats(
     products = db.query(Product).filter(Product.is_active == True).all()
     total_products = len(products)
     
-    # 재고 총액 계산
-    total_inventory_value = sum(p.current_stock * p.price for p in products)
+    # 재고 총액 계산 - 구매가와 판매가 모두 계산, USD는 1300원으로 환산
+    USD_TO_KRW = 1300
+    
+    total_purchase_value = 0
+    total_sales_value = 0
+    
+    for p in products:
+        # 구매가 계산
+        if p.purchase_currency == 'USD':
+            purchase_value_krw = p.current_stock * p.purchase_price * USD_TO_KRW
+        else:
+            purchase_value_krw = p.current_stock * p.purchase_price
+        total_purchase_value += purchase_value_krw
+        
+        # 판매가 계산
+        if p.sale_currency == 'USD':
+            sales_value_krw = p.current_stock * p.sale_price * USD_TO_KRW
+        else:
+            sales_value_krw = p.current_stock * p.sale_price
+        total_sales_value += sales_value_krw
     
     # 재고 부족 제품
     low_stock_products = [p for p in products if p.current_stock <= p.safety_stock]
     
-    # 재고 정확도 (임시로 95-100% 사이 랜덤값)
-    import random
-    average_accuracy = random.uniform(95, 100)
+    # 재고 정확도 계산 - 최근 7일 조정 내역 기반
+    seven_days_ago = today - timedelta(days=7)
+    seven_days_ago_dt = datetime.combine(seven_days_ago, datetime.min.time())
+    
+    # 최근 7일간 조정 거래 조회
+    recent_adjustments = db.query(Transaction).filter(
+        and_(
+            Transaction.transaction_type == "ADJUST",
+            Transaction.transaction_date >= seven_days_ago_dt
+        )
+    ).all()
+    
+    # 제품별 불일치 개수 계산 (절댓값 합계)
+    product_discrepancies = {}
+    for adj in recent_adjustments:
+        if adj.product_code not in product_discrepancies:
+            product_discrepancies[adj.product_code] = 0
+        product_discrepancies[adj.product_code] += abs(adj.quantity)
+    
+    # 각 제품별 정확도 계산
+    product_accuracies = []
+    for product in products:
+        discrepancy_count = product_discrepancies.get(product.product_code, 0)
+        
+        if discrepancy_count == 0:
+            # 불일치가 없으면 100%
+            accuracy = 100.0
+        else:
+            # (현재재고 - 불일치개수) / 현재재고 * 100
+            if product.current_stock <= 0:
+                accuracy = 0.0
+            else:
+                accuracy = max(0.0, (product.current_stock - discrepancy_count) / product.current_stock * 100)
+        
+        product_accuracies.append(accuracy)
+    
+    # 전체 제품 평균 정확도 계산 (소수점 1자리 반올림)
+    if product_accuracies:
+        average_accuracy = round(sum(product_accuracies) / len(product_accuracies), 1)
+    else:
+        average_accuracy = 100.0
     
     # 주간 통계
     week_transactions = db.query(Transaction).filter(
@@ -75,10 +132,18 @@ def get_dashboard_stats(
     month_adjustments = [t for t in month_transactions if t.transaction_type == "ADJUST"]
     month_adjustment_count = len(month_adjustments)
     
-    # 월간 손실액 계산 (조정에서 마이너스 값들의 합)
-    month_loss = sum(abs(t.quantity * p.price) for t in month_adjustments 
-                    if t.quantity < 0 
-                    for p in products if p.id == t.product_id)
+    # 월간 순 손실액 계산 (마이너스 조정은 손실, 플러스 조정은 이득으로 차감)
+    month_loss = 0
+    for t in month_adjustments:
+        product = next((p for p in products if p.product_code == t.product_code), None)
+        if product:
+            # 판매 통화에 따라 원화로 환산
+            if product.sale_currency == 'USD':
+                adjustment_amount = t.quantity * product.sale_price * USD_TO_KRW
+            else:
+                adjustment_amount = t.quantity * product.sale_price
+            # 마이너스는 손실(+), 플러스는 이득(-)으로 계산
+            month_loss -= adjustment_amount  # quantity가 음수면 손실 증가, 양수면 손실 감소
     
     # 조정 사유 분석
     reason_breakdown = {}
@@ -93,18 +158,18 @@ def get_dashboard_stats(
     # 자주 조정되는 제품 TOP
     product_adjustments = {}
     for t in month_adjustments:
-        if t.product_id not in product_adjustments:
-            product = next((p for p in products if p.id == t.product_id), None)
+        if t.product_code not in product_adjustments:
+            product = next((p for p in products if p.product_code == t.product_code), None)
             if product:
-                product_adjustments[t.product_id] = {
-                    "productId": str(t.product_id),
+                product_adjustments[t.product_code] = {
+                    "productId": str(t.product_code),
                     "productName": product.product_name,
                     "adjustmentCount": 0,
                     "totalQuantity": 0
                 }
-        if t.product_id in product_adjustments:
-            product_adjustments[t.product_id]["adjustmentCount"] += 1
-            product_adjustments[t.product_id]["totalQuantity"] += abs(t.quantity)
+        if t.product_code in product_adjustments:
+            product_adjustments[t.product_code]["adjustmentCount"] += 1
+            product_adjustments[t.product_code]["totalQuantity"] += abs(t.quantity)
     
     top_adjusted_products = sorted(
         product_adjustments.values(), 
@@ -122,6 +187,60 @@ def get_dashboard_stats(
         })
     accuracy_trend.reverse()
     
+    # 카테고리별 출고 추이 (최근 10주 - 현재 주 포함)
+    category_outbound_trend = {
+        "검사권": [],
+        "영양제": []
+    }
+    
+    # 현재 주의 월요일 계산
+    current_week_monday = today - timedelta(days=today.weekday())
+    
+    # 최근 10주 (현재 주 포함) 처리
+    for i in range(9, -1, -1):  # 9주 전부터 현재 주까지
+        # 각 주의 월요일 계산
+        week_monday = current_week_monday - timedelta(weeks=i)
+        week_sunday = week_monday + timedelta(days=6)
+        
+        # 해당 주의 출고 거래 조회
+        week_out_transactions = db.query(Transaction).filter(
+            and_(
+                Transaction.transaction_type == "OUT",
+                Transaction.transaction_date >= datetime.combine(week_monday, datetime.min.time()),
+                Transaction.transaction_date <= datetime.combine(week_sunday, datetime.max.time())
+            )
+        ).all()
+        
+        # 카테고리별 출고량 계산
+        test_kit_qty = 0
+        supplement_qty = 0
+        
+        for trans in week_out_transactions:
+            # 제품 정보 찾기
+            product = next((p for p in products if p.product_code == trans.product_code), None)
+            if product:
+                if product.category == "검사권":
+                    test_kit_qty += abs(trans.quantity)
+                elif product.category == "영양제":
+                    supplement_qty += abs(trans.quantity)
+        
+        # 주 표시 형식 결정
+        if i == 0:
+            week_label = "이번 주"
+        elif i == 1:
+            week_label = "1주 전"
+        else:
+            week_label = f"{i}주 전"
+        
+        category_outbound_trend["검사권"].append({
+            "week": week_label,
+            "quantity": test_kit_qty
+        })
+        category_outbound_trend["영양제"].append({
+            "week": week_label,
+            "quantity": supplement_qty
+        })
+    
     data = {
         "today": {
             "inbound": today_inbound,
@@ -130,10 +249,12 @@ def get_dashboard_stats(
             "date": today.isoformat()
         },
         "inventory": {
-            "totalValue": total_inventory_value,
+            "totalPurchaseValue": total_purchase_value,
+            "totalSalesValue": total_sales_value,
             "totalProducts": total_products,
             "lowStockCount": len(low_stock_products),
-            "averageAccuracy": round(average_accuracy, 1)
+            "averageAccuracy": round(average_accuracy, 1),
+            "exchangeRate": USD_TO_KRW
         },
         "weekly": {
             "totalAdjustments": week_adjustment_count,
@@ -147,6 +268,7 @@ def get_dashboard_stats(
             "totalLossAmount": round(month_loss, 0),
             "averageLoss": round(month_loss / max(month_adjustment_count, 1), 0)
         },
+        "categoryOutboundTrend": category_outbound_trend,
         "pendingDiscrepancies": []  # 실제로는 별도 테이블에서 가져와야 함
     }
     

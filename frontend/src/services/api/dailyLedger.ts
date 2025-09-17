@@ -1,9 +1,9 @@
-import api from '../axios';
+import api from '../api';
 
 export interface DailyLedger {
   id: string;
   ledger_date: string;
-  product_id: string;
+  product_code: string;
   beginning_stock: number;
   total_inbound: number;
   total_outbound: number;
@@ -11,7 +11,6 @@ export interface DailyLedger {
   ending_stock: number;
   created_at: string;
   product?: {
-    id: string;
     product_code: string;
     product_name: string;
     unit: string;
@@ -28,7 +27,7 @@ export interface LedgerSummary {
 
 export const dailyLedgerAPI = {
   // 일일 수불부 조회
-  getAll: (params?: { ledger_date?: string; product_id?: string }) => {
+  getAll: (params?: { ledger_date?: string; product_code?: string }) => {
     return api.get<DailyLedger[]>('/daily-ledger', { params });
   },
 

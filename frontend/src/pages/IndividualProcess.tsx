@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Minus, RefreshCw, Package, Search } from 'lucide-react';
 import { productAPI } from '../services/api/product';
 import { transactionAPI } from '../services/api/transaction';
-import toast, { Toaster } from 'react-hot-toast';
+import { showSuccess, showError, showWarning, showInfo } from '../utils/toast';
 
 interface Product {
   id: string;
@@ -59,7 +59,7 @@ const IndividualProcess: React.FC = () => {
         setShowDropdown(true);
       } catch (error) {
         console.error('제품 검색 실패:', error);
-        toast.error('제품 검색에 실패했습니다');
+        showError('제품 검색에 실패했습니다');
       } finally {
         setIsSearching(false);
       }
@@ -81,18 +81,18 @@ const IndividualProcess: React.FC = () => {
     e.preventDefault();
 
     if (!selectedProduct) {
-      toast.error('제품을 선택해주세요');
+      showError('제품을 선택해주세요');
       return;
     }
 
     if (quantity <= 0) {
-      toast.error('수량은 0보다 커야 합니다');
+      showError('수량은 0보다 커야 합니다');
       return;
     }
 
     // 출고 시 재고 확인
     if (transactionType === 'OUT' && quantity > selectedProduct.current_stock) {
-      toast.error(`재고가 부족합니다 (현재 재고: ${selectedProduct.current_stock})`);
+      showError(`재고가 부족합니다 (현재 재고: ${selectedProduct.current_stock})`);
       return;
     }
 
@@ -114,7 +114,7 @@ const IndividualProcess: React.FC = () => {
       const message = transactionType === 'IN' 
         ? `${selectedProduct.product_name} ${quantity}${selectedProduct.unit} 입고 완료`
         : `${selectedProduct.product_name} ${quantity}${selectedProduct.unit} 출고 완료`;
-      toast.success(message);
+      showSuccess(message);
 
       // 폼 초기화
       setSelectedProduct(null);
@@ -131,7 +131,7 @@ const IndividualProcess: React.FC = () => {
       }
     } catch (error) {
       console.error('트랜잭션 처리 실패:', error);
-      toast.error('처리 중 오류가 발생했습니다');
+      showError('처리 중 오류가 발생했습니다');
     } finally {
       setIsLoading(false);
     }
@@ -150,7 +150,6 @@ const IndividualProcess: React.FC = () => {
 
   return (
     <div className="p-6">
-      <Toaster position="top-right" />
       
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">개별 처리</h1>

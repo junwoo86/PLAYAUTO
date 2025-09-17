@@ -1,0 +1,384 @@
+import React, { useState, useEffect } from 'react';
+import { RotateCcw, Package, Calendar, AlertCircle, Check, X } from 'lucide-react';
+import { api } from '../services/api';
+import toast, { Toaster } from 'react-hot-toast';
+
+interface Transaction {
+  id: string;
+  product_id: string;
+  transaction_type: string;
+  quantity: number;
+  date: string;
+  reason?: string;
+  memo?: string;
+  created_at: string;
+  product?: Product;
+}
+
+interface Product {
+  id: string;
+  product_code: string;
+  product_name: string;
+  current_stock: number;
+  unit: string;
+}
+
+const CancelReturn: React.FC = () => {
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [products, setProducts] = useState<Map<string, Product>>(new Map());
+  const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
+  const [returnQuantity, setReturnQuantity] = useState<number>(0);
+  const [returnReason, setReturnReason] = useState('');
+  const [returnMemo, setReturnMemo] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [dateFilter, setDateFilter] = useState({
+    startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    endDate: new Date().toISOString().split('T')[0]
+  });
+
+  // 거래 내역 조회
+  useEffect(() => {
+    fetchTransactions();
+  }, [dateFilter]);
+
+  const fetchTransactions = async () => {
+    setIsLoading(true);
+    try {
+      // 모든 거래 내역 조회
+      const response = await api.get('/transactions');
+
+      // OUT 타입 거래만 필터링하고 날짜 필터 적용
+      const data = response.data.items || response.data.data || response.data || [];
+      const transactionArray = Array.isArray(data) ? data : [];
+
+      const outTransactions = transactionArray.filter((t: Transaction) =>
+        t.transaction_type === 'OUT' &&
+        t.date >= dateFilter.startDate &&
+        t.date <= dateFilter.endDate
+      ).sort((a: Transaction, b: Transaction) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+
+      // 제품 정보 조회
+      const productIds = [...new Set(outTransactions.map((t: Transaction) => t.product_id))];
+      const productMap = new Map<string, Product>();
+      
+      for (const productId of productIds) {
+        try {
+          const productResponse = await api.get(`/products/${productId}`);
+          productMap.set(productId, productResponse.data);
+        } catch (error) {
+          console.error(`제품 정보 조회 실패: ${productId}`, error);
+        }
+      }
+
+      setProducts(productMap);
+      
+      // 거래 내역에 제품 정보 추가
+      const transactionsWithProducts = outTransactions.map((t: Transaction) => ({
+        ...t,
+        product: productMap.get(t.product_id)
+      }));
+
+      setTransactions(transactionsWithProducts);
+    } catch (error) {
+      console.error('거래 내역 조회 실패:', error);
+      toast.error('거래 내역을 불러오는데 실패했습니다');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 반품 선택
+  const selectTransaction = (transaction: Transaction) => {
+    setSelectedTransaction(transaction);
+    setReturnQuantity(transaction.quantity);
+    setReturnReason('');
+    setReturnMemo('');
+  };
+
+  // 반품 처리
+  const handleReturn = async () => {
+    if (!selectedTransaction || !selectedTransaction.product) {
+      toast.error('거래를 선택해주세요');
+      return;
+    }
+
+    if (returnQuantity <= 0 || returnQuantity > selectedTransaction.quantity) {
+      toast.error(`반품 수량은 1 ~ ${selectedTransaction.quantity} 사이여야 합니다`);
+      return;
+    }
+
+    if (!returnReason.trim()) {
+      toast.error('반품 사유를 입력해주세요');
+      return;
+    }
+
+    setIsProcessing(true);
+    try {
+      // return 타입으로 새 트랜잭션 생성
+      await api.post('/transactions', {
+        product_id: selectedTransaction.product_id,
+        transaction_type: 'return',
+        quantity: returnQuantity,
+        reason: returnReason,
+        memo: returnMemo || `원거래: ${selectedTransaction.id}`,
+        date: new Date().toISOString().split('T')[0]
+      });
+
+      toast.success(
+        `${selectedTransaction.product.product_name} ${returnQuantity}${selectedTransaction.product.unit} 반품 완료`
+      );
+
+      // 폼 초기화
+      setSelectedTransaction(null);
+      setReturnQuantity(0);
+      setReturnReason('');
+      setReturnMemo('');
+
+      // 거래 내역 새로고침
+      fetchTransactions();
+    } catch (error) {
+      console.error('반품 처리 실패:', error);
+      toast.error('반품 처리 중 오류가 발생했습니다');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 선택 취소
+  const cancelSelection = () => {
+    setSelectedTransaction(null);
+    setReturnQuantity(0);
+    setReturnReason('');
+    setReturnMemo('');
+  };
+
+  return (
+    <div className="p-6">
+      <Toaster position="top-right" />
+      
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">취소 및 반품</h1>
+        <p className="mt-2 text-gray-600">출고된 제품의 반품을 처리합니다</p>
+      </div>
+
+      {/* 날짜 필터 */}
+      <div className="bg-white rounded-lg shadow-md p-4 mb-6">
+        <div className="flex items-center gap-4">
+          <Calendar className="h-5 w-5 text-gray-400" />
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={dateFilter.startDate}
+              onChange={(e) => setDateFilter({...dateFilter, startDate: e.target.value})}
+              className="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="text-gray-500">~</span>
+            <input
+              type="date"
+              value={dateFilter.endDate}
+              onChange={(e) => setDateFilter({...dateFilter, endDate: e.target.value})}
+              className="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <button
+            onClick={fetchTransactions}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            조회
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* 거래 내역 테이블 */}
+        <div className="bg-white rounded-lg shadow-md overflow-hidden">
+          <div className="p-4 bg-gray-50 border-b">
+            <h2 className="text-lg font-semibold text-gray-900">출고 내역</h2>
+          </div>
+          
+          <div className="overflow-x-auto">
+            {isLoading ? (
+              <div className="p-8 text-center text-gray-500">
+                거래 내역을 불러오는 중...
+              </div>
+            ) : transactions.length === 0 ? (
+              <div className="p-8 text-center text-gray-500">
+                <Package className="h-12 w-12 text-gray-300 mx-auto mb-2" />
+                <p>해당 기간에 출고 내역이 없습니다</p>
+              </div>
+            ) : (
+              <table className="min-w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">날짜</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">제품명</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">수량</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">작업</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {transactions.map((transaction) => (
+                    <tr 
+                      key={transaction.id}
+                      className={`hover:bg-gray-50 ${
+                        selectedTransaction?.id === transaction.id ? 'bg-blue-50' : ''
+                      }`}
+                    >
+                      <td className="px-4 py-3 text-sm text-gray-900">
+                        {transaction.date}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        <div>
+                          <p className="font-medium text-gray-900">
+                            {transaction.product?.product_name || 'Unknown'}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            {transaction.product?.product_code || '-'}
+                          </p>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-900">
+                        {transaction.quantity}{transaction.product?.unit || ''}
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => selectTransaction(transaction)}
+                          className={`px-3 py-1 text-sm rounded-lg transition-colors ${
+                            selectedTransaction?.id === transaction.id
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-red-100 text-red-700 hover:bg-red-200'
+                          }`}
+                        >
+                          <RotateCcw className="h-4 w-4 inline mr-1" />
+                          반품
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+
+        {/* 반품 처리 폼 */}
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-gray-900">반품 처리</h2>
+          </div>
+
+          {selectedTransaction && selectedTransaction.product ? (
+            <div className="space-y-4">
+              {/* 선택된 거래 정보 */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="flex items-start">
+                  <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5 mr-3" />
+                  <div className="flex-1">
+                    <h3 className="font-medium text-gray-900">
+                      {selectedTransaction.product.product_name}
+                    </h3>
+                    <p className="text-sm text-gray-600 mt-1">
+                      출고일: {selectedTransaction.date} | 
+                      출고 수량: {selectedTransaction.quantity}{selectedTransaction.product.unit}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* 반품 수량 */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  반품 수량
+                </label>
+                <input
+                  type="number"
+                  value={returnQuantity}
+                  onChange={(e) => setReturnQuantity(parseInt(e.target.value) || 0)}
+                  min="1"
+                  max={selectedTransaction.quantity}
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  최대 {selectedTransaction.quantity}{selectedTransaction.product.unit}까지 반품 가능
+                </p>
+              </div>
+
+              {/* 반품 사유 */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  반품 사유 <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={returnReason}
+                  onChange={(e) => setReturnReason(e.target.value)}
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                  required
+                >
+                  <option value="">선택하세요</option>
+                  <option value="고객 변심">고객 변심</option>
+                  <option value="제품 불량">제품 불량</option>
+                  <option value="오배송">오배송</option>
+                  <option value="주문 취소">주문 취소</option>
+                  <option value="기타">기타</option>
+                </select>
+              </div>
+
+              {/* 메모 */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  메모
+                </label>
+                <textarea
+                  value={returnMemo}
+                  onChange={(e) => setReturnMemo(e.target.value)}
+                  placeholder="추가 메모를 입력하세요"
+                  rows={3}
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              {/* 버튼 */}
+              <div className="flex gap-3">
+                <button
+                  onClick={handleReturn}
+                  disabled={isProcessing}
+                  className={`flex-1 px-4 py-3 rounded-lg font-medium transition-colors ${
+                    isProcessing
+                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                      : 'bg-red-600 text-white hover:bg-red-700'
+                  }`}
+                >
+                  {isProcessing ? (
+                    <>처리 중...</>
+                  ) : (
+                    <>
+                      <Check className="inline h-5 w-5 mr-2" />
+                      반품 처리
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={cancelSelection}
+                  className="px-4 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  <X className="inline h-5 w-5 mr-2" />
+                  취소
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-12 text-gray-500">
+              <RotateCcw className="h-12 w-12 text-gray-300 mx-auto mb-3" />
+              <p>왼쪽 테이블에서 반품할 거래를 선택하세요</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default CancelReturn;

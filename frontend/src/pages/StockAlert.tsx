@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { 
+import {
   AlertCircle, Bell, Package, ShoppingCart, TrendingDown, RefreshCw, CheckCircle, X
 } from 'lucide-react';
-import { productAPI } from '../services/api/product';
-import toast, { Toaster } from 'react-hot-toast';
+import { productAPI } from '../services/api';
+import { showSuccess, showError, showWarning, showInfo } from '../utils/toast';
+import { useNavigate } from 'react-router-dom';
 
 interface Product {
   id: string;
@@ -30,6 +31,7 @@ interface StockAlert {
 }
 
 const StockAlertPage: React.FC = () => {
+  const navigate = useNavigate();
   const [alerts, setAlerts] = useState<StockAlert[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [filterLevel, setFilterLevel] = useState<'all' | 'danger' | 'warning' | 'low'>('all');
@@ -55,14 +57,14 @@ const StockAlertPage: React.FC = () => {
             ? (product.current_stock / product.safety_stock) * 100 
             : 0;
           
-          // 알림 레벨 결정
+          // 알림 레벨 결정 (안전재고 대비 재고율 기준)
           let alertLevel: 'danger' | 'warning' | 'low';
-          if (product.current_stock <= product.min_stock) {
-            alertLevel = 'danger';
-          } else if (product.current_stock <= product.safety_stock * 0.5) {
-            alertLevel = 'warning';
+          if (percentage < 40) {
+            alertLevel = 'danger';  // 긴급: 40% 미만
+          } else if (percentage < 70) {
+            alertLevel = 'warning';  // 경고: 40% 이상 70% 미만
           } else {
-            alertLevel = 'low';
+            alertLevel = 'low';      // 주의: 70% 이상
           }
           
           // 권장 발주 수량 계산
@@ -91,13 +93,13 @@ const StockAlertPage: React.FC = () => {
       const warningCount = stockAlerts.filter(a => a.alertLevel === 'warning').length;
       
       if (dangerCount > 0) {
-        toast.error(`긴급: ${dangerCount}개 제품이 최소 재고 이하입니다!`);
+        showError(`긴급: ${dangerCount}개 제품이 최소 재고 이하입니다!`);
       } else if (warningCount > 0) {
-        toast.warning(`경고: ${warningCount}개 제품의 재고가 부족합니다`);
+        showError(`경고: ${warningCount}개 제품의 재고가 부족합니다`);
       }
     } catch (error) {
       console.error('재고 알림 조회 실패:', error);
-      toast.error('재고 알림 데이터를 불러오는데 실패했습니다');
+      showError('재고 알림 데이터를 불러오는데 실패했습니다');
     } finally {
       setIsLoading(false);
     }
@@ -210,7 +212,15 @@ const StockAlertPage: React.FC = () => {
             <div className="flex gap-3 pt-2">
               <button
                 onClick={() => {
-                  toast.success('발주 페이지로 이동합니다');
+                  // 발주 페이지로 이동 (쿼리 파라미터로 제품 정보 전달)
+                  const params = new URLSearchParams({
+                    product_code: alert.product.product_code,
+                    product_name: alert.product.product_name,
+                    quantity: String(alert.suggestedOrderQuantity)
+                  });
+
+                  showSuccess('발주 페이지로 이동합니다');
+                  navigate(`/purchase-order?${params.toString()}`);
                   onClose();
                 }}
                 className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
@@ -233,12 +243,36 @@ const StockAlertPage: React.FC = () => {
 
   return (
     <div className="p-6">
-      <Toaster position="top-right" />
       
       {/* 헤더 */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">재고 부족 알림</h1>
         <p className="mt-2 text-gray-600">안전 재고 이하 제품을 관리하고 발주를 제안합니다</p>
+      </div>
+
+      {/* 상태 분류 기준 안내 */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+        <h3 className="text-sm font-semibold text-blue-900 mb-2">재고 상태 분류 기준 (안전재고 대비 재고율)</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+            <span className="text-blue-800">
+              <span className="font-semibold">주의:</span> 70% 이상 (안전재고에 근접)
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
+            <span className="text-yellow-800">
+              <span className="font-semibold">경고:</span> 40% 이상 ~ 70% 미만 (발주 권장)
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+            <span className="text-red-800">
+              <span className="font-semibold">긴급:</span> 40% 미만 (즉시 발주 필요)
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* 통계 카드 */}

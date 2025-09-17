@@ -13,7 +13,7 @@ class Discrepancy(BaseModel):
     __tablename__ = "discrepancies"
     
     # 제품 정보
-    product_id = Column(UUID(as_uuid=True), ForeignKey('products.id'), nullable=False, index=True)
+    product_code = Column(String(50), ForeignKey('products.product_code'), nullable=False, index=True)
     
     # 재고 정보
     system_stock = Column(Integer, nullable=False)  # 시스템 재고
@@ -29,7 +29,7 @@ class Discrepancy(BaseModel):
     resolved_by = Column(String(100))
     
     # 관계
-    product = relationship("Product", back_populates="discrepancies")
+    product = relationship("Product", foreign_keys=[product_code], back_populates="discrepancies")
     
     def __repr__(self):
-        return f"<Discrepancy Product:{self.product_id} Diff:{self.discrepancy} Status:{self.status}>"
+        return f"<Discrepancy Product:{self.product_code} Diff:{self.discrepancy} Status:{self.status}>"

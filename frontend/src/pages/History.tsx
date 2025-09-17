@@ -1,10 +1,10 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { FixedSizeList as List } from 'react-window';
 import debounce from 'lodash.debounce';
-import { 
+import {
   History, Filter, Download, Calendar, ChevronRight,
   Package, TrendingUp, TrendingDown, Settings, ArrowRightLeft,
-  Clock, User, FileText, Plus, X, RefreshCw
+  Clock, User, FileText, Plus, X, RefreshCw, Trash2
 } from 'lucide-react';
 import {
   PageHeader,
@@ -13,7 +13,9 @@ import {
   TextField,
   CheckboxField
 } from '../components';
-import { useData } from '../contexts/DataContext';
+import { transactionAPI } from '../services/api';
+import { showSuccess, showError, showWarning, showInfo } from '../utils/toast';
+import { parseUTCToLocal, formatKoreanDateTimeShort, getDateRangeFilter } from '../utils/dateUtils';
 
 interface HistoryItem {
   id: string;
@@ -35,7 +37,7 @@ interface HistoryItem {
 }
 
 function HistoryPage() {
-  const { transactions } = useData();
+  const [transactions, setTransactions] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState('all');
   const [customDateRange, setCustomDateRange] = useState({ start: '', end: '' });
@@ -46,6 +48,7 @@ function HistoryPage() {
   const [productFilter, setProductFilter] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState<string>('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const datePickerRef = useRef<HTMLDivElement>(null);
   const filterModalRef = useRef<HTMLDivElement>(null);
   
@@ -62,8 +65,49 @@ function HistoryPage() {
     debouncedSearch(value);
   }, [debouncedSearch]);
 
-  // 컴포넌트 마운트 시 localStorage에서 필터 설정 확인
+  // 실제 거래 데이터 가져오기
+  const fetchTransactions = async () => {
+    setIsLoading(true);
+    try {
+      const response = await transactionAPI.getAll({
+        limit: 100 // API 제한에 맞게 100개로 변경
+      });
+      setTransactions(response.data || []);
+    } catch (error) {
+      console.error('거래 내역 조회 실패:', error);
+      showError('거래 내역을 불러오는데 실패했습니다');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 거래 삭제 처리
+  const handleDeleteTransaction = async () => {
+    if (!selectedItem) return;
+    
+    try {
+      await transactionAPI.delete(selectedItem.id);
+      showSuccess('거래 내역이 삭제되었습니다');
+      setShowDeleteConfirm(false);
+      setSelectedItem(null);
+      // 목록 새로고침
+      fetchTransactions();
+    } catch (error: any) {
+      console.error('거래 삭제 실패:', error);
+      
+      // 백엔드에서 반환한 구체적인 에러 메시지 표시
+      if (error.response?.data?.detail) {
+        showError(error.response.data.detail);
+      } else {
+        showError('거래 삭제 중 오류가 발생했습니다');
+      }
+    }
+  };
+
+  // 컴포넌트 마운트 시 데이터 로드
   React.useEffect(() => {
+    fetchTransactions();
+    
     const filterProduct = localStorage.getItem('historyFilterProduct');
     if (filterProduct) {
       setProductFilter(filterProduct);
@@ -121,57 +165,51 @@ function HistoryPage() {
     }
   };
 
-  // 트랜잭션을 히스토리 아이템으로 그룹화 - 메모이제이션 최적화
+  // 트랜잭션을 히스토리 아이템으로 그룹화 - 실제 API 데이터 구조 사용
   const historyItems: HistoryItem[] = useMemo(() => {
     // 제품 필터 및 검색 필터 적용
     let filteredTransactions = transactions;
     
     if (productFilter) {
-      filteredTransactions = filteredTransactions.filter(t => t.productName === productFilter);
+      filteredTransactions = filteredTransactions.filter(t => 
+        t.product_name === productFilter
+      );
     }
     
     if (debouncedSearchTerm) {
       const searchLower = debouncedSearchTerm.toLowerCase();
       filteredTransactions = filteredTransactions.filter(t => 
-        t.productName.toLowerCase().includes(searchLower) ||
-        t.productCode.toLowerCase().includes(searchLower) ||
-        t.createdBy.toLowerCase().includes(searchLower)
+        (t.product_name?.toLowerCase().includes(searchLower)) ||
+        (t.product_code?.toLowerCase().includes(searchLower)) ||
+        (t.created_by?.toLowerCase().includes(searchLower))
       );
     }
 
-    // 같은 시간대의 트랜잭션을 그룹화
-    const grouped = filteredTransactions.reduce((acc, trans) => {
-      const key = `${trans.date.getTime()}-${trans.type}-${trans.createdBy}`;
-      if (!acc[key]) {
-        acc[key] = {
-          id: key,
-          type: trans.type,
-          date: trans.date,
-          user: trans.createdBy,
-          items: [],
-          totalItems: 0,
-          totalQuantity: 0,
-          memo: trans.memo,
-          tags: trans.reason ? [trans.reason] : []
-        };
-      }
+    // 실제 API 데이터를 HistoryItem으로 변환
+    return filteredTransactions.map(trans => {
+      const transactionType = trans.transaction_type === 'IN' ? 'inbound' : 
+                             trans.transaction_type === 'OUT' ? 'outbound' : 
+                             trans.transaction_type === 'ADJUST' ? 'adjustment' : 'transfer';
       
-      acc[key].items.push({
-        productId: trans.productId,
-        productName: trans.productName,
-        productCode: trans.productCode || '',
-        quantity: trans.quantity,
-        fromLocation: trans.type === 'transfer' ? '기본 창고' : undefined,
-        toLocation: trans.type === 'transfer' ? '매장' : undefined
-      });
-      
-      acc[key].totalItems = acc[key].items.length;
-      acc[key].totalQuantity += trans.quantity;
-      
-      return acc;
-    }, {} as Record<string, HistoryItem>);
-
-    return Object.values(grouped).sort((a, b) => b.date.getTime() - a.date.getTime());
+      return {
+        id: trans.id,
+        type: transactionType as 'inbound' | 'outbound' | 'adjustment' | 'transfer',
+        date: parseUTCToLocal(trans.transaction_date || trans.created_at),
+        user: trans.created_by || '관리자',
+        items: [{
+          productId: trans.product_code || '',
+          productName: trans.product_name || '알 수 없는 제품',
+          productCode: trans.product_code || '',
+          quantity: trans.quantity,
+          fromLocation: transactionType === 'transfer' ? '기본 창고' : undefined,
+          toLocation: transactionType === 'transfer' ? '매장' : undefined
+        }],
+        totalItems: 1,
+        totalQuantity: Math.abs(trans.quantity),
+        memo: trans.memo || trans.reason,
+        tags: trans.reason ? [trans.reason] : []
+      };
+    }).sort((a, b) => b.date.getTime() - a.date.getTime());
   }, [transactions, productFilter, debouncedSearchTerm]);
 
   // 기간 필터링 - 메모이제이션 적용
@@ -181,19 +219,12 @@ function HistoryPage() {
     const now = new Date();
     const itemDate = new Date(item.date);
     
+    const range = getDateRangeFilter(selectedPeriod);
+    if (range) {
+      return itemDate >= range.start && itemDate <= range.end;
+    }
+
     switch (selectedPeriod) {
-      case 'today':
-        const todayStart = new Date(now);
-        todayStart.setHours(0, 0, 0, 0);
-        const todayEnd = new Date(now);
-        todayEnd.setHours(23, 59, 59, 999);
-        return itemDate >= todayStart && itemDate <= todayEnd;
-      case 'week':
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        return itemDate >= weekAgo;
-      case 'month':
-        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        return itemDate >= monthAgo;
       case 'custom':
         if (customDateRange.start && customDateRange.end) {
           const start = new Date(customDateRange.start);
@@ -223,14 +254,7 @@ function HistoryPage() {
   }), [filteredItems, activeFilters]);
 
   const formatDate = (date: Date) => {
-    return new Intl.DateTimeFormat('ko-KR', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    }).format(date);
+    return formatKoreanDateTimeShort(date);
   };
 
   const periodOptions = [
@@ -463,7 +487,18 @@ function HistoryPage() {
             {selectedItem ? (
               <div>
                 <div className="mb-6">
-                  <h3 className="text-lg font-semibold mb-4">거래 상세</h3>
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-lg font-semibold">거래 상세</h3>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      icon={Trash2}
+                      onClick={() => setShowDeleteConfirm(true)}
+                      className="text-red-600 hover:bg-red-50"
+                    >
+                      삭제
+                    </Button>
+                  </div>
                   
                   <div className="space-y-3">
                     <div className="flex items-center gap-2">
@@ -580,6 +615,34 @@ function HistoryPage() {
                 onClick={() => setShowFilterModal(false)}
               >
                 적용
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 삭제 확인 다이얼로그 */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full">
+            <h3 className="text-lg font-semibold mb-4">거래 내역 삭제</h3>
+            <p className="text-gray-600 mb-6">
+              이 거래 내역을 삭제하시겠습니까?<br />
+              삭제된 데이터는 복구할 수 없으며, 재고 수량에 영향을 줄 수 있습니다.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setShowDeleteConfirm(false)}
+              >
+                취소
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleDeleteTransaction}
+                className="bg-red-600 hover:bg-red-700 text-white"
+              >
+                삭제
               </Button>
             </div>
           </div>

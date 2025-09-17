@@ -16,6 +16,7 @@ export interface Product {
   lastScanned?: Date;
   accuracyRate?: number; // 정확도
   discrepancy?: number; // 불일치
+  discrepancy_count?: number; // 7일간 조정 건수
   lastAdjustmentDate?: Date; // 마지막 조정 날짜
   lastAdjustmentReason?: string; // 마지막 조정 사유
   bom?: BOMItem[]; // BOM 구성

@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import debounce from 'lodash.debounce';
-import { 
+import {
   AlertCircle, Calendar, Plus, FileSpreadsheet, ScanBarcode,
   Download, Upload, Settings, ArrowRightLeft, Save, X, AlertTriangle, Search
 } from 'lucide-react';
@@ -13,9 +13,9 @@ import {
   TextareaField,
   Alert
 } from '../components';
-import { productAPI } from '../services/api/product';
-import { transactionAPI } from '../services/api/transaction';
-import toast, { Toaster } from 'react-hot-toast';
+import { productAPI, transactionAPI } from '../services/api';
+import { showSuccess, showError, showWarning, showInfo } from '../utils/toast';
+import { getLocalDateString } from '../utils/dateUtils';
 
 interface TransactionFormProps {
   type: 'receive' | 'dispatch' | 'adjustment' | 'transfer';
@@ -31,9 +31,23 @@ function TransactionForm({ type }: TransactionFormProps) {
   const fetchProducts = async () => {
     try {
       const response = await productAPI.getAll();
-      setProducts(response.data);
+      setProducts(response.data || []);
     } catch (error) {
-      toast.error('제품 목록을 불러오는데 실패했습니다');
+      showError('제품 목록을 불러오는데 실패했습니다');
+    }
+  };
+
+  // 헬퍼 함수들
+
+  const addTransaction = async (transaction: any) => {
+    try {
+      await transactionAPI.create(transaction);
+      showSuccess(`${transaction.product_code} 거래가 완료되었습니다.`);
+      return true;
+    } catch (error) {
+      console.error('Transaction creation failed:', error);
+      showError(`${transaction.product_code} 거래 처리 중 오류가 발생했습니다.`);
+      return false;
     }
   };
   const titles = {
@@ -43,8 +57,10 @@ function TransactionForm({ type }: TransactionFormProps) {
     transfer: '이동'
   };
   
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-  const [location, setLocation] = useState('main');
+  const [date, setDate] = useState(getLocalDateString());
+  // 위치 필드 제거 - 제품 목록에서만 관리
+  // const [location, setLocation] = useState('main');
+  // const [targetLocation, setTargetLocation] = useState('sub1'); // 이동 대상 위치
   const [memo, setMemo] = useState('');
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [quantity, setQuantity] = useState('');
@@ -83,8 +99,8 @@ function TransactionForm({ type }: TransactionFormProps) {
     
     const searchLower = debouncedSearchValue.toLowerCase();
     return products.filter(p => 
-      p.productName.toLowerCase().includes(searchLower) ||
-      p.productCode.toLowerCase().includes(searchLower)
+      p.product_name.toLowerCase().includes(searchLower) ||
+      p.product_code.toLowerCase().includes(searchLower)
     );
   }, [products, debouncedSearchValue]);
 
@@ -124,59 +140,107 @@ function TransactionForm({ type }: TransactionFormProps) {
     setProductList(prev => prev.filter(item => item.id !== id));
   }, []);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (productList.length === 0) {
       showError('처리할 제품을 추가해주세요.');
       return;
     }
 
-    productList.forEach(item => {
-      const transactionType = type === 'receive' ? 'inbound' : 
-                             type === 'dispatch' ? 'outbound' : 
-                             'adjustment';
+    // 위치 이동 타입은 더 이상 사용하지 않음
+    if (type === 'transfer') {
+      showError('위치 이동 기능은 별도 메뉴를 이용해주세요.');
+      return;
+    }
+
+    let successCount = 0;
+    let totalCount = productList.length;
+    
+    for (const item of productList) {
+      const transactionType = type === 'receive' ? 'IN' : 
+                             type === 'dispatch' ? 'OUT' : 
+                             type === 'transfer' ? 'TRANSFER' :
+                             'ADJUST';
 
       // 날짜와 현재 시각을 조합
       const transactionDate = new Date(date);
       const now = new Date();
       transactionDate.setHours(now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
 
+      let result = false;
+      
       if (type === 'adjustment') {
         // 조정인 경우 불일치 계산
-        const discrepancy = item.quantity - item.product.currentStock;
-        addTransaction({
-          type: transactionType,
-          productId: item.product.id,
-          productName: item.product.productName,
+        const discrepancy = item.quantity - item.product.current_stock;
+        result = await addTransaction({
+          transaction_type: transactionType,
+          product_code: item.product.product_code,
           quantity: discrepancy, // 차이값 기록
-          previousStock: item.product.currentStock,
-          newStock: item.quantity, // 실제 재고량
-          date: transactionDate,
-          reason: item.reason,
+          reason: item.reason || '실사 차이',
           memo: item.detail || memo || `실사: ${item.quantity}개 (불일치: ${discrepancy > 0 ? '+' : ''}${discrepancy}개)`,
-          createdBy: '관리자'
+          // location은 제품 목록에서 관리
+          created_by: '관리자',
+          transaction_date: transactionDate.toISOString()
         });
+      } else if (type === 'transfer') {
+        // 위치 이동은 출고 + 입고로 처리
+        // 1. 현재 위치에서 출고
+        const outResult = await addTransaction({
+          transaction_type: 'OUT',
+          product_code: item.product.product_code,
+          quantity: item.quantity,
+          reason: '위치 이동 (출고)',
+          memo: `${location} → ${targetLocation}: ${memo}`,
+          location: location === 'main' ? '본사 창고' : '지점 창고',
+          created_by: '관리자',
+          transaction_date: transactionDate.toISOString()
+        });
+        
+        // 2. 대상 위치로 입고
+        if (outResult) {
+          result = await addTransaction({
+            transaction_type: 'IN',
+            product_code: item.product.product_code,
+            quantity: item.quantity,
+            reason: '위치 이동 (입고)',
+            memo: memo,
+            // location은 제품 목록에서 관리
+            created_by: '관리자',
+            transaction_date: transactionDate.toISOString()
+          });
+        }
       } else {
-        addTransaction({
-          type: transactionType,
-          productId: item.product.id,
-          productName: item.product.productName,
-          quantity: type === 'dispatch' ? -item.quantity : item.quantity,
-          previousStock: item.product.currentStock,
-          newStock: type === 'dispatch' ? 
-            item.product.currentStock - item.quantity : 
-            item.product.currentStock + item.quantity,
-          date: transactionDate,
-          reason: item.reason,
+        result = await addTransaction({
+          transaction_type: transactionType,
+          product_code: item.product.product_code,
+          quantity: item.quantity, // 항상 양수로 전송, 백엔드에서 타입에 따라 처리
+          reason: item.reason || (type === 'receive' ? '입고' : '출고'),
           memo: item.detail || memo,
-          createdBy: '관리자'
+          // location은 제품 목록에서 관리
+          created_by: '관리자',
+          transaction_date: transactionDate.toISOString()
         });
       }
-    });
+      
+      if (result) {
+        successCount++;
+      }
+    }
 
-    // 초기화
-    setProductList([]);
-    setMemo('');
-    showSuccess(`${titles[type]} 처리가 완료되었습니다.`);
+    // 결과에 따른 피드백
+    if (successCount === totalCount) {
+      showSuccess(`${titles[type]} 처리가 모두 완료되었습니다. (${successCount}/${totalCount})`);
+      // 성공시에만 초기화
+      setProductList([]);
+      setMemo('');
+      // 제품 목록 새로고침
+      fetchProducts();
+    } else if (successCount > 0) {
+      showError(`일부 ${titles[type]} 처리가 실패했습니다. (성공: ${successCount}/${totalCount})`);
+      // 일부 성공한 경우에도 제품 목록 새로고침
+      fetchProducts();
+    } else {
+      showError(`${titles[type]} 처리가 모두 실패했습니다.`);
+    }
   };
 
   return (
@@ -202,19 +266,8 @@ function TransactionForm({ type }: TransactionFormProps) {
       
       <div className="bg-white rounded-lg shadow p-6">
         <div className="space-y-6">
-          {/* 기본 정보 */}
+          {/* 날짜 정보 */}
           <div className="grid grid-cols-2 gap-4">
-            <SelectField
-              label="위치"
-              name="location"
-              required
-              options={[
-                { value: 'main', label: '본사 창고' },
-                { value: 'sub1', label: '지점 창고' }
-              ]}
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-            />
             <TextField
               label="날짜"
               name="date"
@@ -223,7 +276,9 @@ function TransactionForm({ type }: TransactionFormProps) {
               onChange={(e) => setDate(e.target.value)}
               icon={Calendar}
             />
+            <div></div> {/* 빈 공간 유지 */}
           </div>
+          
           
           {/* 제품 추가 섹션 */}
           <div className="border rounded-lg p-4">
@@ -237,7 +292,7 @@ function TransactionForm({ type }: TransactionFormProps) {
                   type="text"
                   placeholder="제품명 또는 제품코드로 검색 (클릭하여 전체 목록 보기)"
                   value={searchValue}
-                  onChange={(e) => setSearchValue(e.target.value)}
+                  onChange={(e) => handleSearchChange(e.target.value)}
                   onFocus={() => setShowProductList(true)}
                   className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
@@ -271,11 +326,11 @@ function TransactionForm({ type }: TransactionFormProps) {
                       >
                         <div className="flex justify-between">
                           <div>
-                            <p className="font-medium">{product.productName}</p>
-                            <p className="text-sm text-gray-500">{product.productCode}</p>
+                            <p className="font-medium">{product.product_name}</p>
+                            <p className="text-sm text-gray-500">{product.product_code}</p>
                           </div>
                           <div className="text-right">
-                            <p className="font-bold">{product.currentStock}개</p>
+                            <p className="font-bold">{product.current_stock}개</p>
                             <p className="text-sm text-gray-500">현재 재고</p>
                           </div>
                         </div>
@@ -294,9 +349,9 @@ function TransactionForm({ type }: TransactionFormProps) {
                   <div className="p-3 bg-blue-50 rounded-lg">
                     <div className="flex justify-between items-center">
                       <div>
-                        <p className="font-semibold">{selectedProduct.productName}</p>
+                        <p className="font-semibold">{selectedProduct.product_name}</p>
                         <p className="text-sm text-gray-600">
-                          {selectedProduct.productCode} | 현재 재고: {selectedProduct.currentStock}개
+                          {selectedProduct.product_code} | 현재 재고: {selectedProduct.current_stock}개
                         </p>
                       </div>
                       <Button
@@ -321,15 +376,15 @@ function TransactionForm({ type }: TransactionFormProps) {
                           placeholder="실사 확인된 실제 재고를 입력하세요"
                           min="0"
                         />
-                        {quantity && parseInt(quantity) !== selectedProduct.currentStock && (
+                        {quantity && parseInt(quantity) !== selectedProduct.current_stock && (
                           <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
                             <p className={`text-sm font-medium ${
-                              parseInt(quantity) > selectedProduct.currentStock ? 'text-green-600' : 'text-red-600'
+                              parseInt(quantity) > selectedProduct.current_stock ? 'text-green-600' : 'text-red-600'
                             }`}>
-                              불일치: {parseInt(quantity) > selectedProduct.currentStock ? '+' : ''}{parseInt(quantity) - selectedProduct.currentStock}개
+                              불일치: {parseInt(quantity) > selectedProduct.current_stock ? '+' : ''}{parseInt(quantity) - selectedProduct.current_stock}개
                             </p>
                             <p className="text-xs text-gray-600 mt-1">
-                              현재({selectedProduct.currentStock}개) → 실제({quantity}개)
+                              현재({selectedProduct.current_stock}개) → 실제({quantity}개)
                             </p>
                           </div>
                         )}
@@ -414,8 +469,8 @@ function TransactionForm({ type }: TransactionFormProps) {
                     {productList.map(item => (
                       <tr key={item.id} className="border-t">
                         <td className="p-3">
-                          <p className="font-medium">{item.product.productName}</p>
-                          <p className="text-sm text-gray-500">{item.product.productCode}</p>
+                          <p className="font-medium">{item.product.product_name}</p>
+                          <p className="text-sm text-gray-500">{item.product.product_code}</p>
                         </td>
                         <td className="text-center p-3">
                           <span className="font-bold">{item.quantity}개</span>
@@ -492,6 +547,7 @@ function TransactionForm({ type }: TransactionFormProps) {
           </div>
         </div>
       )}
+      
     </div>
   );
 }

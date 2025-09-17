@@ -7,6 +7,7 @@ interface SearchBarProps {
   onChange?: (value: string) => void;
   onSearch?: (value: string) => void;
   onClear?: () => void;
+  onFocus?: () => void;
   showFilter?: boolean;
   onFilterClick?: () => void;
   showBarcode?: boolean;
@@ -27,6 +28,7 @@ export function SearchBar({
   onChange,
   onSearch,
   onClear,
+  onFocus,
   showFilter = false,
   onFilterClick,
   showBarcode = false,
@@ -74,6 +76,7 @@ export function SearchBar({
           value={value}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onFocus={onFocus}
           placeholder={placeholder}
           className={`
             w-full border border-gray-300 rounded-lg

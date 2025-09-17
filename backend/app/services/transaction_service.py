@@ -11,6 +11,7 @@ from fastapi import HTTPException, status
 from app.models.transaction import Transaction
 from app.models.product import Product
 from app.schemas.transaction import TransactionCreate
+from app.core.timezone_utils import get_current_utc_time, ensure_timezone_aware
 
 
 class TransactionService:
@@ -25,11 +26,11 @@ class TransactionService:
         """Create new transaction and update product stock"""
         
         # 제품 조회
-        product = db.query(Product).filter(Product.id == transaction_create.product_id).first()
+        product = db.query(Product).filter(Product.product_code == transaction_create.product_code).first()
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product with id {transaction_create.product_id} not found"
+                detail=f"Product with code {transaction_create.product_code} not found"
             )
         
         # 현재 재고 확인
@@ -53,7 +54,7 @@ class TransactionService:
         # 트랜잭션 생성
         transaction = Transaction(
             transaction_type=transaction_create.transaction_type,
-            product_id=transaction_create.product_id,
+            product_code=transaction_create.product_code,
             quantity=transaction_create.quantity,
             previous_stock=previous_stock,
             new_stock=new_stock,
@@ -61,7 +62,7 @@ class TransactionService:
             memo=transaction_create.memo,
             location=transaction_create.location,
             created_by=transaction_create.created_by or created_by,
-            transaction_date=transaction_create.transaction_date or datetime.now()
+            transaction_date=ensure_timezone_aware(transaction_create.transaction_date)
         )
         
         # 제품 재고 업데이트
@@ -69,7 +70,7 @@ class TransactionService:
         
         # 자동 안전재고 계산 (출고시에만)
         if transaction_create.transaction_type == "OUT" and product.is_auto_calculated:
-            product.safety_stock = TransactionService.calculate_safety_stock(db, product.id)
+            product.safety_stock = TransactionService.calculate_safety_stock(db, product.product_code)
         
         db.add(transaction)
         db.commit()
@@ -82,7 +83,7 @@ class TransactionService:
         db: Session,
         skip: int = 0,
         limit: int = 100,
-        product_id: Optional[UUID] = None,
+        product_code: Optional[str] = None,
         transaction_type: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None
@@ -90,8 +91,8 @@ class TransactionService:
         """Get list of transactions with filters"""
         query = db.query(Transaction)
         
-        if product_id:
-            query = query.filter(Transaction.product_id == product_id)
+        if product_code:
+            query = query.filter(Transaction.product_code == product_code)
         
         if transaction_type:
             query = query.filter(Transaction.transaction_type == transaction_type)
@@ -129,7 +130,7 @@ class TransactionService:
             )
     
     @staticmethod
-    def calculate_safety_stock(db: Session, product_id: UUID) -> int:
+    def calculate_safety_stock(db: Session, product_code: str) -> int:
         """
         Calculate safety stock based on 3-month average outbound
         Safety Stock = (Lead Time + Buffer Days) * Average Daily Outbound
@@ -137,23 +138,23 @@ class TransactionService:
         from datetime import timedelta
         
         # 제품 정보 조회
-        product = db.query(Product).filter(Product.id == product_id).first()
+        product = db.query(Product).filter(Product.product_code == product_code).first()
         if not product:
             return 0
         
         # 3개월 전 날짜
-        three_months_ago = datetime.now() - timedelta(days=90)
+        three_months_ago = get_current_utc_time() - timedelta(days=90)
         
         # 3개월간 출고량 합계
         total_outbound = db.query(func.sum(Transaction.quantity)).filter(
-            Transaction.product_id == product_id,
+            Transaction.product_code == product_code,
             Transaction.transaction_type == "outbound",
             Transaction.transaction_date >= three_months_ago
         ).scalar() or 0
         
         # 출고가 있었던 일수
         days_with_outbound = db.query(func.count(func.distinct(func.date(Transaction.transaction_date)))).filter(
-            Transaction.product_id == product_id,
+            Transaction.product_code == product_code,
             Transaction.transaction_type == "outbound",
             Transaction.transaction_date >= three_months_ago
         ).scalar() or 1

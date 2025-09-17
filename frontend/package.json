@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
     "@types/file-saver": "^2.0.7",
     "@types/lodash.debounce": "^4.0.9",
     "axios": "^1.6.2",
@@ -13,10 +14,11 @@
     "lucide-react": "^0.294.0",
     "react": "18.2.0",
     "react-dom": "18.2.0",
+    "react-hot-toast": "^2.6.0",
     "react-router-dom": "^6.20.1",
     "react-window": "^2.0.2",
     "react-window-infinite-loader": "^1.0.10",
-    "recharts": "^2.10.3"
+    "recharts": "^2.15.4"
   },
   "devDependencies": {
     "@types/node": "^20.10.5",

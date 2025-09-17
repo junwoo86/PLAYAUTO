@@ -2,10 +2,10 @@
 Product Service Layer
 """
 from typing import List, Optional
-from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from fastapi import HTTPException, status
+from uuid import UUID
 
 from app.models.product import Product
 from app.schemas.product import ProductCreate, ProductUpdate
@@ -21,6 +21,7 @@ class ProductService:
         limit: int = 100,
         search: Optional[str] = None,
         category: Optional[str] = None,
+        warehouse_id: Optional[UUID] = None,
         is_active: bool = True
     ) -> List[Product]:
         """Get list of products with filters"""
@@ -34,6 +35,10 @@ class ProductService:
         if category:
             query = query.filter(Product.category == category)
         
+        # 창고 필터
+        if warehouse_id:
+            query = query.filter(Product.warehouse_id == warehouse_id)
+        
         # 검색 필터
         if search:
             search_filter = or_(
@@ -44,11 +49,6 @@ class ProductService:
             query = query.filter(search_filter)
         
         return query.offset(skip).limit(limit).all()
-    
-    @staticmethod
-    def get_product(db: Session, product_id: UUID) -> Optional[Product]:
-        """Get single product by ID"""
-        return db.query(Product).filter(Product.id == product_id).first()
     
     @staticmethod
     def get_product_by_code(db: Session, product_code: str) -> Optional[Product]:
@@ -74,17 +74,17 @@ class ProductService:
         return product
     
     @staticmethod
-    def update_product(
+    def update_product_by_code(
         db: Session, 
-        product_id: UUID, 
+        product_code: str, 
         product_update: ProductUpdate
     ) -> Product:
-        """Update existing product"""
-        product = ProductService.get_product(db, product_id)
+        """Update existing product by product code"""
+        product = ProductService.get_product_by_code(db, product_code)
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product with id {product_id} not found"
+                detail=f"Product with code {product_code} not found"
             )
         
         # 업데이트할 필드만 적용
@@ -107,13 +107,13 @@ class ProductService:
         return product
     
     @staticmethod
-    def delete_product(db: Session, product_id: UUID) -> bool:
-        """Delete product (soft delete)"""
-        product = ProductService.get_product(db, product_id)
+    def delete_product_by_code(db: Session, product_code: str) -> bool:
+        """Delete product by code (soft delete)"""
+        product = ProductService.get_product_by_code(db, product_code)
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product with id {product_id} not found"
+                detail=f"Product with code {product_code} not found"
             )
         
         # Soft delete
@@ -126,16 +126,20 @@ class ProductService:
         db: Session,
         search: Optional[str] = None,
         category: Optional[str] = None,
+        warehouse_id: Optional[UUID] = None,
         is_active: bool = True
     ) -> int:
         """Count total products with filters"""
-        query = db.query(func.count(Product.id))
+        query = db.query(func.count(Product.product_code))
         
         if is_active is not None:
             query = query.filter(Product.is_active == is_active)
         
         if category:
             query = query.filter(Product.category == category)
+        
+        if warehouse_id:
+            query = query.filter(Product.warehouse_id == warehouse_id)
         
         if search:
             search_filter = or_(
@@ -148,8 +152,8 @@ class ProductService:
         return query.scalar()
     
     @staticmethod
-    def calculate_safety_stock(db: Session, product_id: UUID) -> int:
-        """Calculate safety stock based on 3-month average"""
+    def calculate_safety_stock_by_code(db: Session, product_code: str) -> int:
+        """Calculate safety stock by product code based on 3-month average"""
         # TODO: Implement safety stock calculation based on transaction history
         # For now, return a default value
         return 10

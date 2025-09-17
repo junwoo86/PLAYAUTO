@@ -17,7 +17,7 @@ router = APIRouter()
 
 # Pydantic 스키마
 class PurchaseOrderItemCreate(BaseModel):
-    product_id: str
+    product_code: str
     ordered_quantity: int
     unit_price: float
 
@@ -27,11 +27,18 @@ class PurchaseOrderCreate(BaseModel):
     notes: Optional[str] = None
     items: List[PurchaseOrderItemCreate]
 
+class PurchaseOrderItemUpdate(BaseModel):
+    item_id: Optional[str] = None
+    product_code: str
+    ordered_quantity: int
+    unit_price: float
+
 class PurchaseOrderUpdate(BaseModel):
     supplier: Optional[str] = None
     status: Optional[str] = None
     expected_date: Optional[str] = None
     notes: Optional[str] = None
+    items: Optional[List[PurchaseOrderItemUpdate]] = None
 
 class PurchaseOrderResponse(BaseModel):
     id: str
@@ -44,6 +51,8 @@ class PurchaseOrderResponse(BaseModel):
     created_at: str
     updated_at: str
     items: List[dict]
+    product_name: Optional[str] = None  # 첫 번째 품목명
+    currency: Optional[str] = None  # 통화 정보
 
 @router.get("/", response_model=List[PurchaseOrderResponse])
 def get_purchase_orders(
@@ -73,12 +82,19 @@ def get_purchase_orders(
         ).all()
         
         items_data = []
+        product_name = ""  # 첫 번째 품목명 저장용
+        currency = "KRW"  # 기본 통화
         for item in items:
-            product = db.query(Product).filter(Product.id == item.product_id).first()
+            product = db.query(Product).filter(Product.product_code == item.product_code).first()
+            if product:
+                if not product_name:  # 첫 번째 품목명 저장
+                    product_name = product.product_name
+                # 첫 번째 제품의 구매 통화 저장
+                if hasattr(product, 'purchase_currency') and product.purchase_currency:
+                    currency = product.purchase_currency
             items_data.append({
                 "id": str(item.id),
-                "product_id": str(item.product_id),
-                "product_code": product.product_code if product else "",
+                "product_code": item.product_code,
                 "product_name": product.product_name if product else "",
                 "ordered_quantity": item.ordered_quantity,
                 "received_quantity": item.received_quantity,
@@ -97,7 +113,9 @@ def get_purchase_orders(
             "notes": order.notes,
             "created_at": order.created_at.isoformat(),
             "updated_at": order.updated_at.isoformat(),
-            "items": items_data
+            "items": items_data,
+            "product_name": product_name,  # 첫 번째 품목명 추가
+            "currency": currency  # 통화 정보 추가
         })
     
     return result
@@ -147,7 +165,7 @@ def create_purchase_order(
     for item_data in order_data.items:
         item = PurchaseOrderItem(
             po_id=order.id,
-            product_id=uuid.UUID(item_data.product_id),
+            product_code=item_data.product_code,
             ordered_quantity=item_data.ordered_quantity,
             unit_price=item_data.unit_price,
             status="pending"
@@ -156,11 +174,10 @@ def create_purchase_order(
         total_amount += item_data.ordered_quantity * item_data.unit_price
         
         # 제품 정보 가져오기
-        product = db.query(Product).filter(Product.id == item.product_id).first()
+        product = db.query(Product).filter(Product.product_code == item.product_code).first()
         items_data.append({
             "id": str(item.id),
-            "product_id": str(item.product_id),
-            "product_code": product.product_code if product else "",
+            "product_code": item.product_code,
             "product_name": product.product_name if product else "",
             "ordered_quantity": item.ordered_quantity,
             "received_quantity": 0,
@@ -175,6 +192,16 @@ def create_purchase_order(
     db.commit()
     db.refresh(order)
     
+    # 첫 번째 제품의 통화 정보 가져오기
+    currency = "KRW"
+    product_name = ""
+    if items_data:
+        first_product = db.query(Product).filter(Product.product_code == items_data[0]["product_code"]).first()
+        if first_product:
+            product_name = first_product.product_name
+            if hasattr(first_product, 'purchase_currency') and first_product.purchase_currency:
+                currency = first_product.purchase_currency
+    
     return {
         "id": str(order.id),
         "po_number": order.po_number,
@@ -185,7 +212,9 @@ def create_purchase_order(
         "notes": order.notes,
         "created_at": order.created_at.isoformat(),
         "updated_at": order.updated_at.isoformat(),
-        "items": items_data
+        "items": items_data,
+        "product_name": product_name,
+        "currency": currency
     }
 
 @router.get("/{po_id}", response_model=PurchaseOrderResponse)
@@ -209,12 +238,18 @@ def get_purchase_order(
     ).all()
     
     items_data = []
+    currency = "KRW"
+    product_name = ""
     for item in items:
-        product = db.query(Product).filter(Product.id == item.product_id).first()
+        product = db.query(Product).filter(Product.product_code == item.product_code).first()
+        if product:
+            if not product_name:
+                product_name = product.product_name
+            if hasattr(product, 'purchase_currency') and product.purchase_currency:
+                currency = product.purchase_currency
         items_data.append({
             "id": str(item.id),
-            "product_id": str(item.product_id),
-            "product_code": product.product_code if product else "",
+            "product_code": item.product_code,
             "product_name": product.product_name if product else "",
             "ordered_quantity": item.ordered_quantity,
             "received_quantity": item.received_quantity,
@@ -233,7 +268,114 @@ def get_purchase_order(
         "notes": order.notes,
         "created_at": order.created_at.isoformat(),
         "updated_at": order.updated_at.isoformat(),
-        "items": items_data
+        "items": items_data,
+        "product_name": product_name,
+        "currency": currency
+    }
+
+@router.put("/{po_id}")
+def update_purchase_order(
+    po_id: str,
+    order_data: PurchaseOrderUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    발주서 전체 정보 수정
+    """
+    order = db.query(PurchaseOrder).filter(
+        PurchaseOrder.id == uuid.UUID(po_id)
+    ).first()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="발주서를 찾을 수 없습니다")
+    
+    # 발주서 기본 정보 업데이트
+    if order_data.supplier is not None:
+        order.supplier = order_data.supplier
+    if order_data.status is not None:
+        if order_data.status not in ['draft', 'pending', 'partial', 'completed', 'cancelled']:
+            raise HTTPException(status_code=400, detail="유효하지 않은 상태입니다")
+        order.status = order_data.status
+    if order_data.expected_date is not None:
+        order.expected_date = order_data.expected_date
+    if order_data.notes is not None:
+        order.notes = order_data.notes
+    
+    # 발주 항목 업데이트
+    if order_data.items is not None:
+        total_amount = 0
+        for item_data in order_data.items:
+            if item_data.item_id:
+                # 기존 항목 업데이트
+                item = db.query(PurchaseOrderItem).filter(
+                    PurchaseOrderItem.id == uuid.UUID(item_data.item_id)
+                ).first()
+                if item:
+                    item.product_code = item_data.product_code
+                    item.ordered_quantity = item_data.ordered_quantity
+                    item.unit_price = item_data.unit_price
+                    total_amount += item_data.ordered_quantity * item_data.unit_price
+            else:
+                # 새 항목 추가 (필요한 경우)
+                new_item = PurchaseOrderItem(
+                    po_id=order.id,
+                    product_code=item_data.product_code,
+                    ordered_quantity=item_data.ordered_quantity,
+                    unit_price=item_data.unit_price,
+                    status="pending"
+                )
+                db.add(new_item)
+                total_amount += item_data.ordered_quantity * item_data.unit_price
+        
+        # 총 금액 업데이트
+        order.total_amount = total_amount
+    
+    db.commit()
+    db.refresh(order)
+    
+    # 응답 데이터 구성
+    items = db.query(PurchaseOrderItem).filter(
+        PurchaseOrderItem.po_id == order.id
+    ).all()
+    
+    items_data = []
+    product_name = ""
+    currency = "KRW"  # 기본값
+    
+    for item in items:
+        product = db.query(Product).filter(Product.product_code == item.product_code).first()
+        if product:
+            if not product_name:
+                product_name = product.product_name
+            # 제품의 구매 통화 정보 가져오기
+            if product.purchase_currency:
+                currency = product.purchase_currency
+                
+        items_data.append({
+            "id": str(item.id),
+            "product_code": item.product_code,
+            "product_name": product.product_name if product else "",
+            "ordered_quantity": item.ordered_quantity,
+            "received_quantity": item.received_quantity,
+            "unit_price": float(item.unit_price),
+            "subtotal": float(item.ordered_quantity * item.unit_price),
+            "status": item.status,
+            "currency": currency
+        })
+    
+    return {
+        "id": str(order.id),
+        "po_number": order.po_number,
+        "supplier": order.supplier,
+        "status": order.status,
+        "total_amount": float(order.total_amount),
+        "expected_date": order.expected_date.isoformat() if order.expected_date else None,
+        "notes": order.notes,
+        "created_at": order.created_at.isoformat(),
+        "updated_at": order.updated_at.isoformat(),
+        "items": items_data,
+        "product_name": product_name,
+        "currency": currency
     }
 
 @router.put("/{po_id}/status")
@@ -291,7 +433,7 @@ def receive_purchase_order_items(
                 item.status = 'partial'
             
             # 제품 재고 업데이트
-            product = db.query(Product).filter(Product.id == item.product_id).first()
+            product = db.query(Product).filter(Product.product_code == item.product_code).first()
             if product:
                 product.current_stock += received_item['quantity']
     
@@ -308,3 +450,37 @@ def receive_purchase_order_items(
     db.commit()
     
     return {"message": "입고 처리가 완료되었습니다"}
+
+@router.delete("/{po_id}")
+def delete_purchase_order(
+    po_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    발주서 삭제 (취소 처리)
+    상태를 'cancelled'로 변경하거나 완전 삭제
+    """
+    order = db.query(PurchaseOrder).filter(
+        PurchaseOrder.id == uuid.UUID(po_id)
+    ).first()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="발주서를 찾을 수 없습니다")
+    
+    # 이미 입고 처리가 시작된 경우 삭제 불가
+    if order.status in ['partial', 'completed']:
+        raise HTTPException(
+            status_code=400, 
+            detail="입고가 진행된 발주서는 삭제할 수 없습니다. 대신 취소 상태로 변경해주세요."
+        )
+    
+    # 발주서와 연관된 항목들 삭제
+    db.query(PurchaseOrderItem).filter(
+        PurchaseOrderItem.po_id == order.id
+    ).delete()
+    
+    # 발주서 삭제
+    db.delete(order)
+    db.commit()
+    
+    return {"message": "발주서가 삭제되었습니다"}

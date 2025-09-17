@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   RotateCcw, Package, AlertTriangle, CheckCircle, 
   XCircle, Archive, Save, Trash2
@@ -15,6 +15,7 @@ import {
 } from '../components';
 import { useData } from '../contexts/DataContext';
 import { useToast } from '../contexts/ToastContext';
+import { transactionAPI } from '../services/api';
 
 function ReturnManagement() {
   const { products, addTransaction } = useData();
@@ -27,7 +28,23 @@ function ReturnManagement() {
   const [returnReason, setReturnReason] = useState('');
   const [inspectionNotes, setInspectionNotes] = useState('');
   const [searchValue, setSearchValue] = useState('');
+  const [showProductList, setShowProductList] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  // 외부 클릭 시 제품 목록 닫기
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setShowProductList(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   const filteredProducts = products.filter(p => 
     p.productName.toLowerCase().includes(searchValue.toLowerCase()) ||
@@ -67,64 +84,79 @@ function ReturnManagement() {
     setShowConfirmModal(true);
   };
 
-  const processReturn = () => {
+  const processReturn = async () => {
     const qty = parseInt(quantity);
     
-    if (returnType === 'cancel' || finalDisposition === 'restock') {
-      // 재입고 처리
-      addTransaction({
-        type: 'inbound',
-        productId: selectedProduct.id,
-        productName: selectedProduct.productName,
+    try {
+      let transactionData: any = {
+        product_code: selectedProduct.productCode,
         quantity: qty,
-        previousStock: selectedProduct.currentStock,
-        newStock: selectedProduct.currentStock + qty,
-        date: new Date(),
-        reason: returnType === 'cancel' ? '주문 취소' : '반품 재입고',
-        memo: `${returnReason} - ${inspectionNotes}`,
-        createdBy: '관리자'
-      });
-    } else if (finalDisposition === 'dispose') {
-      // 폐기 처리 (조정으로 기록)
-      addTransaction({
-        type: 'adjustment',
-        productId: selectedProduct.id,
-        productName: selectedProduct.productName,
-        quantity: 0, // 폐기는 재고 변동 없음
-        previousStock: selectedProduct.currentStock,
-        newStock: selectedProduct.currentStock,
-        date: new Date(),
-        reason: '반품 폐기',
-        memo: `${returnReason} - 제품 상태: ${productStatus} - ${inspectionNotes}`,
-        createdBy: '관리자'
-      });
-    } else if (finalDisposition === 'hold') {
-      // 보류 처리
-      addTransaction({
-        type: 'adjustment',
-        productId: selectedProduct.id,
-        productName: selectedProduct.productName,
-        quantity: 0,
-        previousStock: selectedProduct.currentStock,
-        newStock: selectedProduct.currentStock,
-        date: new Date(),
-        reason: '반품 보류',
-        memo: `검토 필요 - ${returnReason} - ${inspectionNotes}`,
-        createdBy: '관리자'
-      });
-    }
+        created_by: '관리자'
+      };
 
-    // 초기화
-    setSelectedProduct(null);
-    setQuantity('');
-    setProductStatus('');
-    setFinalDisposition('');
-    setReturnReason('');
-    setInspectionNotes('');
-    setSearchValue('');
-    setShowConfirmModal(false);
-    
-    showSuccess(`${returnType === 'cancel' ? '취소' : '반품'} 처리가 완료되었습니다.`);
+      if (returnType === 'cancel' || finalDisposition === 'restock') {
+        // 재입고 처리
+        transactionData = {
+          ...transactionData,
+          transaction_type: 'IN',
+          reason: returnType === 'cancel' ? '주문 취소' : '반품 재입고',
+          memo: `${returnReason} - ${inspectionNotes}`
+        };
+      } else if (finalDisposition === 'dispose') {
+        // 폐기 처리 (조정으로 기록)
+        transactionData = {
+          ...transactionData,
+          transaction_type: 'ADJUST',
+          quantity: selectedProduct.currentStock, // ADJUST는 최종 재고값
+          reason: '반품 폐기',
+          memo: `${returnReason} - 제품 상태: ${productStatus} - ${inspectionNotes}`
+        };
+      } else if (finalDisposition === 'hold') {
+        // 보류 처리
+        transactionData = {
+          ...transactionData,
+          transaction_type: 'ADJUST',
+          quantity: selectedProduct.currentStock, // 재고 변동 없음
+          reason: '반품 보류',
+          memo: `검토 필요 - ${returnReason} - ${inspectionNotes}`
+        };
+      }
+
+      // API 호출
+      await transactionAPI.create(transactionData);
+      
+      // DataContext의 addTransaction도 호출 (로컬 상태 업데이트)
+      if (returnType === 'cancel' || finalDisposition === 'restock') {
+        addTransaction({
+          type: 'inbound',
+          productId: selectedProduct.id,
+          productName: selectedProduct.productName,
+          quantity: qty,
+          previousStock: selectedProduct.currentStock,
+          newStock: selectedProduct.currentStock + qty,
+          date: new Date(),
+          reason: transactionData.reason,
+          memo: transactionData.memo,
+          createdBy: '관리자'
+        });
+      }
+
+      // 초기화
+      setSelectedProduct(null);
+      setQuantity('');
+      setProductStatus('');
+      setFinalDisposition('');
+      setReturnReason('');
+      setInspectionNotes('');
+      setSearchValue('');
+      setShowProductList(false);
+      setShowConfirmModal(false);
+      
+      showSuccess(`${returnType === 'cancel' ? '취소' : '반품'} 처리가 완료되었습니다.`);
+    } catch (error) {
+      console.error('Return processing error:', error);
+      showError('처리 중 오류가 발생했습니다.');
+    }
   };
 
   return (
@@ -180,46 +212,50 @@ function ReturnManagement() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 제품 선택
               </label>
-              <SearchBar
-                placeholder="제품명 또는 제품코드로 검색"
-                value={searchValue}
-                onChange={setSearchValue}
-                className="mb-3"
-              />
-            
-            {searchValue && (
-              <div className="border rounded-lg max-h-48 overflow-y-auto">
-                {filteredProducts.length > 0 ? (
-                  filteredProducts.map(product => (
-                    <div
-                      key={product.id}
-                      className={`p-3 hover:bg-gray-50 cursor-pointer border-b last:border-b-0 ${
-                        selectedProduct?.id === product.id ? 'bg-blue-50' : ''
-                      }`}
-                      onClick={() => {
-                        setSelectedProduct(product);
-                        setSearchValue('');
-                      }}
-                    >
-                      <div className="flex justify-between">
-                        <div>
-                          <p className="font-medium">{product.productName}</p>
-                          <p className="text-sm text-gray-500">{product.productCode}</p>
+              <div className="relative" ref={searchRef}>
+                <SearchBar
+                  placeholder="제품명 또는 제품코드로 검색"
+                  value={searchValue}
+                  onChange={setSearchValue}
+                  onFocus={() => setShowProductList(true)}
+                  className="mb-3"
+                />
+                
+                {showProductList && (
+                  <div className="absolute top-full left-0 right-0 z-10 border rounded-lg bg-white shadow-lg max-h-48 overflow-y-auto">
+                    {filteredProducts.length > 0 ? (
+                      filteredProducts.map(product => (
+                        <div
+                          key={product.id}
+                          className={`p-3 hover:bg-gray-50 cursor-pointer border-b last:border-b-0 ${
+                            selectedProduct?.id === product.id ? 'bg-blue-50' : ''
+                          }`}
+                          onClick={() => {
+                            setSelectedProduct(product);
+                            setSearchValue('');
+                            setShowProductList(false);
+                          }}
+                        >
+                          <div className="flex justify-between">
+                            <div>
+                              <p className="font-medium">{product.productName}</p>
+                              <p className="text-sm text-gray-500">{product.productCode}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-bold">{product.currentStock}개</p>
+                              <p className="text-sm text-gray-500">현재 재고</p>
+                            </div>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <p className="font-bold">{product.currentStock}개</p>
-                          <p className="text-sm text-gray-500">현재 재고</p>
-                        </div>
+                      ))
+                    ) : (
+                      <div className="p-4 text-center text-gray-500">
+                        검색 결과가 없습니다.
                       </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="p-4 text-center text-gray-500">
-                    검색 결과가 없습니다.
+                    )}
                   </div>
                 )}
               </div>
-            )}
 
             {selectedProduct && (
               <div className="mt-3 p-3 bg-blue-50 rounded-lg">
@@ -372,6 +408,7 @@ function ReturnManagement() {
                 setReturnReason('');
                 setInspectionNotes('');
                 setSearchValue('');
+                setShowProductList(false);
               }}
             >
               초기화

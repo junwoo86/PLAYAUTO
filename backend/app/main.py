@@ -8,6 +8,7 @@ import logging
 
 from app.core.config import settings
 from app.core.database import init_database, create_tables, test_connection
+from app.core.scheduler import scheduler_instance
 from app.api.v1 import api_router
 
 # 로깅 설정
@@ -37,10 +38,25 @@ async def lifespan(app: FastAPI):
         logger.error("Database connection failed")
         raise Exception("Cannot connect to database")
     
+    # 스케줄러 시작
+    try:
+        scheduler_instance.start()
+        logger.info("Scheduler started successfully")
+    except Exception as e:
+        logger.error(f"Scheduler startup failed: {e}")
+        # 스케줄러 실패는 치명적이지 않으므로 계속 진행
+    
     yield
     
     # Shutdown
     logger.info("Shutting down...")
+    
+    # 스케줄러 중지
+    try:
+        scheduler_instance.stop()
+        logger.info("Scheduler stopped successfully")
+    except Exception as e:
+        logger.error(f"Error stopping scheduler: {e}")
 
 
 # FastAPI 앱 생성
@@ -57,7 +73,7 @@ app = FastAPI(
 # CORS 미들웨어 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

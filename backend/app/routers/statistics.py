@@ -53,7 +53,7 @@ def get_dashboard_stats(
     total_products = len(products)
     
     # 재고 총액 계산
-    total_inventory_value = sum(p.current_stock * p.price for p in products)
+    total_inventory_value = sum(p.current_stock * p.sale_price for p in products)
     
     # 재고 부족 제품
     low_stock_products = [p for p in products if p.current_stock <= p.safety_stock]
@@ -79,7 +79,7 @@ def get_dashboard_stats(
     month_adjustment_count = len(month_adjustments)
     
     # 월간 손실액 계산 (조정에서 마이너스 값들의 합)
-    month_loss = sum(abs(t.quantity * p.price) for t in month_adjustments 
+    month_loss = sum(abs(t.quantity * p.sale_price) for t in month_adjustments 
                     if t.quantity < 0 
                     for p in products if p.id == t.product_id)
     

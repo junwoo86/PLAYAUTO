@@ -10,7 +10,7 @@ from datetime import datetime
 class TransactionBase(BaseModel):
     """Base transaction schema"""
     transaction_type: Literal['IN', 'OUT', 'ADJUST'] = Field(..., description="거래 유형")
-    product_id: UUID = Field(..., description="제품 ID")
+    product_code: str = Field(..., max_length=50, description="제품 코드")
     quantity: int = Field(..., description="수량")
     reason: Optional[str] = Field(None, max_length=100, description="사유")
     memo: Optional[str] = Field(None, description="메모")
@@ -55,7 +55,7 @@ class BatchTransactionCreate(BaseModel):
     
 class StockCountItem(BaseModel):
     """Stock count item for inventory check"""
-    product_id: UUID
+    product_code: str = Field(..., max_length=50, description="제품 코드")
     physical_stock: int = Field(..., ge=0, description="실사 재고")
     explanation: Optional[str] = Field(None, min_length=10, description="불일치 설명")
 
@@ -64,3 +64,40 @@ class StockCountRequest(BaseModel):
     """Stock count request schema"""
     counts: List[StockCountItem]
     created_by: Optional[str] = Field(None, max_length=100)
+
+
+class DailySummary(BaseModel):
+    """일별 입출고 요약"""
+    date: str
+    in_count: int = 0
+    in_quantity: float = 0
+    out_count: int = 0
+    out_quantity: float = 0
+    adjustment_count: int = 0
+    adjustment_quantity: float = 0
+    return_count: int = 0
+    return_quantity: float = 0
+    transfer_count: int = 0
+    transfer_quantity: float = 0
+
+
+class TotalSummary(BaseModel):
+    """전체 기간 요약"""
+    in_count: int = 0
+    in_quantity: float = 0
+    out_count: int = 0
+    out_quantity: float = 0
+    adjustment_count: int = 0
+    adjustment_quantity: float = 0
+    return_count: int = 0
+    return_quantity: float = 0
+    transfer_count: int = 0
+    transfer_quantity: float = 0
+
+
+class TransactionSummaryResponse(BaseModel):
+    """입출고 요약 응답"""
+    start_date: datetime
+    end_date: datetime
+    daily_summary: List[DailySummary]
+    total_summary: TotalSummary

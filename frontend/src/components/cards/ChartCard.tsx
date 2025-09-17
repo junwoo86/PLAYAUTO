@@ -1,5 +1,6 @@
 import React from 'react';
 import { LucideIcon, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 interface ChartCardProps {
   title: string;
@@ -108,24 +109,66 @@ interface SimpleBarChartProps {
 }
 
 export function SimpleBarChart({ data, height = 160 }: SimpleBarChartProps) {
-  const maxValue = Math.max(...data.map(d => d.value));
-  
-  return (
-    <div className="flex items-end justify-around" style={{ height }}>
-      {data.map((item, index) => (
-        <div key={index} className="flex flex-col items-center flex-1 mx-1">
-          <div 
-            className="w-full bg-gradient-to-t from-blue-500 to-blue-400 rounded-t hover:from-blue-600 hover:to-blue-500 transition-colors"
-            style={{
-              height: `${(item.value / maxValue) * 100}%`,
-              backgroundColor: item.color || undefined,
-              minHeight: '4px'
-            }}
-          />
-          <span className="text-xs text-gray-500 mt-2">{item.label}</span>
+  // 커스텀 툴팁
+  const CustomTooltip = ({ active, payload }: any) => {
+    if (active && payload && payload[0]) {
+      return (
+        <div className="bg-white border border-gray-200 rounded px-3 py-2 shadow-lg">
+          <p className="text-sm font-semibold">{payload[0].payload.label}</p>
+          <p className="text-sm text-blue-600 font-bold">
+            {payload[0].value.toLocaleString()}개
+          </p>
         </div>
-      ))}
-    </div>
+      );
+    }
+    return null;
+  };
+
+  // Y축 포맷터
+  const formatYAxisTick = (value: number) => {
+    if (value >= 1000) {
+      return `${(value / 1000).toFixed(1)}k`;
+    }
+    return value.toString();
+  };
+
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart 
+        data={data} 
+        margin={{ top: 20, right: 10, left: 0, bottom: 20 }}
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+        <XAxis 
+          dataKey="label" 
+          tick={{ fontSize: 11, fill: '#6b7280' }}
+          axisLine={{ stroke: '#e5e7eb' }}
+        />
+        <YAxis 
+          tick={{ fontSize: 11, fill: '#6b7280' }}
+          axisLine={{ stroke: '#e5e7eb' }}
+          tickFormatter={formatYAxisTick}
+        />
+        <Tooltip content={<CustomTooltip />} />
+        <Bar 
+          dataKey="value" 
+          radius={[4, 4, 0, 0]}
+          label={{ 
+            position: 'top', 
+            fontSize: 11, 
+            fill: '#374151',
+            formatter: (value: number) => value.toLocaleString()
+          }}
+        >
+          {data.map((entry, index) => (
+            <Cell 
+              key={`cell-${index}`} 
+              fill={entry.color || '#3B82F6'} 
+            />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
   );
 }
 

@@ -17,7 +17,7 @@ class Transaction(BaseModel):
     transaction_type = Column(String(20), nullable=False, index=True)
     
     # 제품 정보
-    product_id = Column(UUID(as_uuid=True), ForeignKey('products.id'), nullable=False, index=True)
+    product_code = Column(String(50), ForeignKey('products.product_code'), nullable=False, index=True)
     
     # 수량 정보
     quantity = Column(Integer, nullable=False)  # 양수: 증가, 음수: 감소
@@ -34,7 +34,7 @@ class Transaction(BaseModel):
     transaction_date = Column(DateTime(timezone=True), default=func.now(), index=True)
     
     # 관계
-    product = relationship("Product", back_populates="transactions")
+    product = relationship("Product", foreign_keys=[product_code], back_populates="transactions")
     
     def __repr__(self):
         return f"<Transaction {self.transaction_type}: {self.quantity} @ {self.transaction_date}>"
