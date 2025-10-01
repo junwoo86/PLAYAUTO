@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 120  # 2시간 (120분)
     
     # Server
     HOST: str = "0.0.0.0"
@@ -30,14 +30,39 @@ class Settings(BaseSettings):
     # CORS
     FRONTEND_URL: str = "http://localhost:3001"
     BACKEND_CORS_ORIGINS: List[str] = []
+
+    # Email Settings
+    EMAIL_ENABLED: bool = False  # 이메일 발송 활성화 여부
+    EMAIL_HOST: str = "smtp.gmail.com"  # 환경변수에서 오버라이드 가능
+    EMAIL_PORT: int = 587  # 환경변수에서 오버라이드 가능
+    EMAIL_USERNAME: str = "ai@biocom.kr"  # 환경변수에서 오버라이드 가능
+    EMAIL_PASSWORD: Optional[str] = None  # Gmail 앱 비밀번호
+    EMAIL_FROM: str = "ai@biocom.kr"  # 환경변수에서 오버라이드 가능
+    EMAIL_FROM_NAME: str = "PLAYAUTO 시스템"  # 환경변수에서 오버라이드 가능
+    EMAIL_USE_TLS: bool = True  # 환경변수에서 오버라이드 가능
     
     @property
     def cors_origins(self) -> List[str]:
         """Get CORS origins"""
-        origins = [self.FRONTEND_URL]
+        origins = []
+
+        # FRONTEND_URL이 설정되어 있으면 추가
+        if self.FRONTEND_URL:
+            origins.append(self.FRONTEND_URL)
+
+        # 기본 개발 환경 URL들 추가
+        origins.extend([
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://localhost:5173"
+        ])
+
+        # 추가 CORS origins
         if self.BACKEND_CORS_ORIGINS:
             origins.extend(self.BACKEND_CORS_ORIGINS)
-        return origins
+
+        # 중복 제거 후 반환
+        return list(set(origins))
     
     class Config:
         env_file = ".env"
