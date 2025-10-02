@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Minus, RefreshCw, Package, Search } from 'lucide-react';
-import { productAPI } from '../services/api/product';
-import { transactionAPI } from '../services/api/transaction';
+import { productAPI, transactionAPI } from '../services/api';
 import { showSuccess, showError, showWarning, showInfo } from '../utils/toast';
 
 interface Product {
