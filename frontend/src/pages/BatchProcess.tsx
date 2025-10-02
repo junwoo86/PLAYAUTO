@@ -10,6 +10,9 @@ import { PageHeader, Button, Alert } from '../components';
 import { TextareaField } from '../components/forms/FormField';
 import { getLocalDateString, getLocalDateTimeString } from '../utils/dateUtils';
 
+// API Base URL 설정
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
 // 입출고 일괄 처리용 행 타입
 interface TransactionRow {
   category?: string;
@@ -655,7 +658,7 @@ function BatchProcess() {
       
       if (transactions.length > 0) {
         // 백엔드 batch API 호출
-        const response = await fetch('http://localhost:8000/api/v1/batch/process', {
+        const response = await fetch(`${API_BASE_URL}/api/v1/batch/process`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -727,7 +730,7 @@ function BatchProcess() {
       
       if (transactions.length > 0) {
         // 백엔드 batch API 호출
-        const response = await fetch('http://localhost:8000/api/v1/batch/process', {
+        const response = await fetch(`${API_BASE_URL}/api/v1/batch/process`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -776,7 +779,7 @@ function BatchProcess() {
       const validProducts = productData.filter(d => d.status !== 'error');
 
       // 백엔드 batch/products API 호출
-      const response = await fetch('http://localhost:8000/api/v1/batch/products', {
+      const response = await fetch(`${API_BASE_URL}/api/v1/batch/products`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
