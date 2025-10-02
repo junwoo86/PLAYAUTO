@@ -41,6 +41,7 @@ function ProductList() {
   const [showOnlyDiscrepancy, setShowOnlyDiscrepancy] = useState(false);
   const [showOnlySetProducts, setShowOnlySetProducts] = useState(false); // 세트 상품 필터 추가
   const [showDeletedProducts, setShowDeletedProducts] = useState(false); // 삭제 상품 필터 추가
+  const [showLowStock, setShowLowStock] = useState(false); // 재고 부족 필터 추가
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [showBOMModal, setShowBOMModal] = useState(false);
   const [assembleQuantity, setAssembleQuantity] = useState(1);
@@ -61,7 +62,11 @@ function ProductList() {
   const [selectedCategory, setSelectedCategory] = useState<string>(''); // 카테고리 필터 추가
   const [sortField, setSortField] = useState<string>(''); // 정렬 필드
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc'); // 정렬 방향
-  
+
+  // 페이징 상태
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 30;
+
   // 제품 코드 중복 검사를 위한 상태
   const [duplicateCheckStatus, setDuplicateCheckStatus] = useState<{
     isChecking: boolean;
@@ -81,6 +86,7 @@ function ProductList() {
   const [bomSearchValue, setBomSearchValue] = useState('');
   const [selectedBOMProduct, setSelectedBOMProduct] = useState<any>(null);
   const [bomQuantity, setBomQuantity] = useState(1);
+  const [initialMaxStock, setInitialMaxStock] = useState<number>(0); // 예상 재고 최대량 초기값 저장
 
   // ConfirmDialog 상태
   const [confirmDialog, setConfirmDialog] = useState({
@@ -193,7 +199,7 @@ function ProductList() {
       }
       const response = await productAPI.getAll(
         0,
-        100,
+        200,
         undefined,
         undefined,
         params.warehouse_id,
@@ -215,20 +221,39 @@ function ProductList() {
         product_code: productCode,
         limit: 100
       });
-      
+
       // API 응답을 프론트엔드에서 사용하는 필드명으로 매핑
-      const mappedData = response.data?.map((transaction: any) => ({
-        id: transaction.id,
-        date: transaction.transaction_date,
-        type: transaction.transaction_type,
-        quantity: transaction.quantity,
-        previousStock: transaction.previous_stock,
-        newStock: transaction.new_stock,
-        reason: transaction.reason,
-        memo: transaction.memo,
-        createdBy: transaction.created_by || '관리자'
-      })) || [];
-      
+      const mappedData = response.data?.map((transaction: any) => {
+        // transaction_type을 프론트엔드 형식으로 변환
+        let type = 'movement'; // 기본값
+        switch (transaction.transaction_type) {
+          case 'IN':
+            type = 'inbound';
+            break;
+          case 'OUT':
+            type = 'outbound';
+            break;
+          case 'ADJUST':
+            type = 'adjustment';
+            break;
+          case 'DISPOSAL':
+            type = 'disposal';
+            break;
+        }
+
+        return {
+          id: transaction.id,
+          date: transaction.transaction_date,
+          type: type,
+          quantity: transaction.quantity,
+          previousStock: transaction.previous_stock,
+          newStock: transaction.new_stock,
+          reason: transaction.reason,
+          memo: transaction.memo,
+          createdBy: transaction.created_by || '관리자'
+        };
+      }) || [];
+
       return mappedData;
     } catch (error) {
       console.error('거래 내역 조회 실패:', error);
@@ -270,15 +295,16 @@ function ProductList() {
       const matchesWarehouse = !selectedWarehouseId || product.warehouse_id === selectedWarehouseId;
       const matchesCategory = !selectedCategory || product.category === selectedCategory;
       const matchesSetProduct = !showOnlySetProducts || (product.bom && product.bom.length > 0);
+      const matchesLowStock = !showLowStock || (product.current_stock <= product.safety_stock);
 
       // 디버깅용 로그
       if (showOnlySetProducts) {
         console.log(`Filtering ${product.product_name}: BOM=`, product.bom, 'matchesSetProduct=', matchesSetProduct);
       }
 
-      return matchesSearch && matchesStock && matchesDiscrepancy && matchesWarehouse && matchesCategory && matchesSetProduct;
+      return matchesSearch && matchesStock && matchesDiscrepancy && matchesWarehouse && matchesCategory && matchesSetProduct && matchesLowStock;
     });
-  }, [products, debouncedSearchValue, showOnlyWithStock, showOnlyDiscrepancy, selectedWarehouseId, selectedCategory, showOnlySetProducts]);
+  }, [products, debouncedSearchValue, showOnlyWithStock, showOnlyDiscrepancy, selectedWarehouseId, selectedCategory, showOnlySetProducts, showLowStock]);
 
   // 정렬된 제품 목록
   const sortedProducts = useMemo(() => {
@@ -286,8 +312,8 @@ function ProductList() {
     
     // 카테고리 우선순위 정렬 함수
     const getCategoryPriority = (category: string) => {
-      if (category === '검사권') return 1;
-      if (category === '영양제') return 2;
+      if (category === '영양제') return 1;
+      if (category === '검사권') return 2;
       return 3;
     };
     
@@ -331,6 +357,21 @@ function ProductList() {
     
     return sorted;
   }, [filteredProducts, sortField, sortDirection]);
+
+  // 페이징된 제품 목록
+  const paginatedProducts = useMemo(() => {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    return sortedProducts.slice(startIndex, endIndex);
+  }, [sortedProducts, currentPage, itemsPerPage]);
+
+  // 전체 페이지 수
+  const totalPages = Math.ceil(sortedProducts.length / itemsPerPage);
+
+  // 필터나 검색어 변경 시 페이지 리셋
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearchValue, showOnlyWithStock, showOnlyDiscrepancy, showOnlySetProducts, showDeletedProducts, showLowStock, selectedWarehouseId, selectedCategory]);
 
   // 세트 가능 수량 계산
   const calculatePossibleSets = (product: any) => {
@@ -506,7 +547,9 @@ function ProductList() {
       showError('SKU와 제품명은 필수 입력 항목입니다.');
       return;
     }
-    
+
+    let success = false;
+
     if (isEditMode && editingProductId) {
       // 제품 수정 API 호출
       try {
@@ -537,13 +580,16 @@ function ProductList() {
         // 제품 코드로 업데이트 (기존 product_code 사용)
         const originalProduct = products.find(p => p.product_code === editingProductId);
         await productAPI.update(originalProduct?.product_code || editingProductId, productData);
+
+        // 전체 제품 목록 새로고침으로 변경 (화면 동기화 보장)
+        await fetchProducts();
+
         showSuccess('제품이 수정되었습니다.');
-        
-        // 개별 제품 업데이트 (위치 유지)
-        await updateSingleProduct(newProduct.productCode);
+        success = true;
       } catch (error) {
         console.error('제품 수정 실패:', error);
         showError('제품 수정에 실패했습니다.');
+        return; // 실패 시 모달 닫지 않음
       }
     } else {
       // 제품 추가 API 호출
@@ -572,19 +618,26 @@ function ProductList() {
           memo: newProduct.memo || null
         };
         await productAPI.create(productData);
+
+        // 새 제품은 전체 목록 새로고침 - 데이터 업데이트 완료 대기
+        await fetchProducts();
+
         showSuccess('제품이 추가되었습니다.');
-        await fetchProducts(); // 새 제품은 전체 목록 새로고침
+        success = true;
       } catch (error) {
         console.error('제품 추가 실패:', error);
         showError('제품 추가에 실패했습니다.');
+        return; // 실패 시 모달 닫지 않음
       }
     }
-    
-    // 모달 닫기 및 초기화
-    setShowAddProductModal(false);
-    setIsEditMode(false);
-    setEditingProductId(null);
-    resetForm();
+
+    // 성공 시에만 모달 닫기 및 초기화
+    if (success) {
+      setShowAddProductModal(false);
+      setIsEditMode(false);
+      setEditingProductId(null);
+      resetForm();
+    }
   };
   
   // 폼 초기화
@@ -959,12 +1012,21 @@ function ProductList() {
                       const formattedBOM = bomData.items.map((item: any) => ({
                         childProductCode: item.child_product_code,
                         childProductName: item.child_product_name,
-                        quantity: item.quantity
+                        quantity: item.quantity,
+                        currentStock: products.find((p: any) => p.product_code === item.child_product_code)?.current_stock || 0
                       }));
                       setEditingBOM(formattedBOM);
+
+                      // 초기 최대 재고량 계산 및 저장
+                      const possibleSets = calculatePossibleSets({...row, bom: formattedBOM});
+                      setInitialMaxStock(row.current_stock + (possibleSets || 0));
+                    } else {
+                      // BOM이 없는 경우
+                      setInitialMaxStock(row.current_stock);
                     }
                   } catch (error) {
                     console.error('BOM 조회 실패:', error);
+                    setInitialMaxStock(row.current_stock);
                   }
 
                   setShowBOMModal(true);
@@ -1122,7 +1184,14 @@ function ProductList() {
                 />
               </div>
             </div>
-            <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-2 gap-4">
+              <CheckboxField
+                label="재고 부족"
+                name="lowStock"
+                checked={showLowStock}
+                onChange={(e) => setShowLowStock(e.target.checked)}
+                className="whitespace-nowrap"
+              />
               <CheckboxField
                 label="재고 보유"
                 name="withStock"
@@ -1147,6 +1216,7 @@ function ProductList() {
                   if (e.target.checked) {
                     setShowOnlyWithStock(false);
                     setShowOnlySetProducts(false);
+                    setShowLowStock(false);
                   }
                 }}
                 className="whitespace-nowrap text-red-600"
@@ -1161,10 +1231,96 @@ function ProductList() {
             <p className="text-gray-500">제품 목록을 불러오는 중...</p>
           </div>
         ) : sortedProducts.length > 0 ? (
-          <DataTable
-            columns={columns}
-            data={sortedProducts}
-          />
+          <>
+            <DataTable
+              columns={columns}
+              data={paginatedProducts}
+            />
+
+            {/* 페이지네이션 */}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between mt-4 px-4 py-3 bg-white border-t border-gray-200">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-700">
+                    전체 {sortedProducts.length}개 중 {(currentPage - 1) * itemsPerPage + 1}-{Math.min(currentPage * itemsPerPage, sortedProducts.length)}개 표시
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(1)}
+                    disabled={currentPage === 1}
+                  >
+                    처음
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                    disabled={currentPage === 1}
+                  >
+                    이전
+                  </Button>
+
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                      let pageNum;
+                      if (totalPages <= 5) {
+                        pageNum = i + 1;
+                      } else if (currentPage <= 3) {
+                        pageNum = i + 1;
+                      } else if (currentPage >= totalPages - 2) {
+                        pageNum = totalPages - 4 + i;
+                      } else {
+                        pageNum = currentPage - 2 + i;
+                      }
+
+                      if (pageNum < 1 || pageNum > totalPages) return null;
+
+                      return (
+                        <Button
+                          key={pageNum}
+                          variant={currentPage === pageNum ? 'primary' : 'outline'}
+                          size="sm"
+                          onClick={() => setCurrentPage(pageNum)}
+                          className={currentPage === pageNum ? 'bg-blue-600 text-white' : ''}
+                        >
+                          {pageNum}
+                        </Button>
+                      );
+                    })}
+                  </div>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                    disabled={currentPage === totalPages}
+                  >
+                    다음
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage === totalPages}
+                  >
+                    마지막
+                  </Button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-700">
+                    페이지 {currentPage} / {totalPages}
+                  </span>
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           <EmptyState
             icon={Package}
@@ -1202,13 +1358,13 @@ function ProductList() {
                 <div>
                   <p className="text-sm text-gray-500">조립 가능</p>
                   <p className="text-2xl font-bold text-green-600">
-                    {calculatePossibleSets(selectedProduct) || 0}
+                    {calculatePossibleSets({...selectedProduct, bom: editingBOM}) || 0}
                   </p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-500">예상 재고 최대량</p>
                   <p className="text-2xl font-bold text-blue-600">
-                    {selectedProduct.current_stock + (calculatePossibleSets(selectedProduct) || 0)}
+                    {initialMaxStock}
                   </p>
                 </div>
               </div>
@@ -1390,49 +1546,35 @@ function ProductList() {
                   <Button
                     onClick={async () => {
                       try {
-                        // BOM 저장
-                        await productBOMAPI.bulkCreate(selectedProduct.product_code, editingBOM);
-
-                        // 트랜잭션 배열 준비
-                        const transactions = [];
-
-                        // 1. 세트 상품 IN 트랜잭션
-                        transactions.push({
-                          transaction_type: 'IN',
-                          product_code: selectedProduct.product_code,
-                          quantity: assembleQuantity,
-                          reason: 'set_assembly',
-                          memo: '세트 상품 조립',
-                          created_by: '관리자'
-                        });
-
-                        // 2. 각 구성품 OUT 트랜잭션
-                        for (const item of editingBOM) {
-                          transactions.push({
-                            transaction_type: 'OUT',
-                            product_code: item.childProductCode,
-                            quantity: item.quantity * assembleQuantity,
-                            reason: 'set_assembly',
-                            memo: `[${selectedProduct.product_name}]_세트 상품 조립`,
-                            created_by: '관리자'
-                          });
-                        }
-
-                        // 일괄 트랜잭션 생성
-                        await transactionAPI.batchCreate(transactions);
+                        // 세트 조립 API 호출
+                        const assembleResult = await productBOMAPI.assemble(selectedProduct.product_code, assembleQuantity);
 
                         showSuccess(`${assembleQuantity}개 세트가 조립되었습니다.`);
 
                         // 제품 목록 새로고침
                         await fetchProducts();
 
-                        // 모달 닫기
-                        setShowBOMModal(false);
-                        setSelectedProduct(null);
-                        setEditingBOM([]);
-                        setBomSearchValue('');
-                        setSelectedBOMProduct(null);
-                        setBomQuantity(1);
+                        // API에서 반환된 세트 제품 정보로 직접 업데이트
+                        if (assembleResult.set_product) {
+                          const updatedSetProduct = {
+                            ...selectedProduct,
+                            current_stock: assembleResult.set_product.new_quantity
+                          };
+                          setSelectedProduct(updatedSetProduct);
+
+                          // 구성 부품 재고 업데이트
+                          const updatedBOM = editingBOM.map(item => {
+                            const requiredQty = item.quantity * assembleQuantity;
+                            return {
+                              ...item,
+                              currentStock: item.currentStock - requiredQty
+                            };
+                          });
+                          setEditingBOM(updatedBOM);
+                        }
+
+                        // 조립 수량 초기화
+                        setAssembleQuantity(1);
                       } catch (error) {
                         console.error('세트 조립 실패:', error);
                         showError('세트 조립에 실패했습니다.');
@@ -1447,49 +1589,35 @@ function ProductList() {
                     variant="outline"
                     onClick={async () => {
                       try {
-                        // BOM 저장
-                        await productBOMAPI.bulkCreate(selectedProduct.product_code, editingBOM);
-
-                        // 트랜잭션 배열 준비
-                        const transactions = [];
-
-                        // 1. 세트 상품 OUT 트랜잭션
-                        transactions.push({
-                          transaction_type: 'OUT',
-                          product_code: selectedProduct.product_code,
-                          quantity: assembleQuantity,
-                          reason: 'set_disassembly',
-                          memo: '세트 상품 해체',
-                          created_by: '관리자'
-                        });
-
-                        // 2. 각 구성품 IN 트랜잭션
-                        for (const item of editingBOM) {
-                          transactions.push({
-                            transaction_type: 'IN',
-                            product_code: item.childProductCode,
-                            quantity: item.quantity * assembleQuantity,
-                            reason: 'set_disassembly',
-                            memo: `[${selectedProduct.product_name}]_세트 상품 해체`,
-                            created_by: '관리자'
-                          });
-                        }
-
-                        // 일괄 트랜잭션 생성
-                        await transactionAPI.batchCreate(transactions);
+                        // 세트 해체 API 호출
+                        const disassembleResult = await productBOMAPI.disassemble(selectedProduct.product_code, assembleQuantity);
 
                         showSuccess(`${assembleQuantity}개 세트가 해체되었습니다.`);
 
                         // 제품 목록 새로고침
                         await fetchProducts();
 
-                        // 모달 닫기
-                        setShowBOMModal(false);
-                        setSelectedProduct(null);
-                        setEditingBOM([]);
-                        setBomSearchValue('');
-                        setSelectedBOMProduct(null);
-                        setBomQuantity(1);
+                        // API에서 반환된 세트 제품 정보로 직접 업데이트
+                        if (disassembleResult.set_product) {
+                          const updatedSetProduct = {
+                            ...selectedProduct,
+                            current_stock: disassembleResult.set_product.new_quantity
+                          };
+                          setSelectedProduct(updatedSetProduct);
+
+                          // 구성 부품 재고 업데이트
+                          const updatedBOM = editingBOM.map(item => {
+                            const returnedQty = item.quantity * assembleQuantity;
+                            return {
+                              ...item,
+                              currentStock: item.currentStock + returnedQty
+                            };
+                          });
+                          setEditingBOM(updatedBOM);
+                        }
+
+                        // 조립 수량 초기화
+                        setAssembleQuantity(1);
                       } catch (error) {
                         console.error('세트 해체 실패:', error);
                         showError('세트 해체에 실패했습니다.');
@@ -1545,7 +1673,7 @@ function ProductList() {
                     setBomQuantity(1);
                   }}
                 >
-                  취소
+                  나가기
                 </Button>
                 <Button
                   onClick={async () => {
@@ -2258,7 +2386,7 @@ function ProductList() {
       {/* 제품별 히스토리 모달 */}
       {showHistoryModal && selectedProduct && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg p-6 max-w-5xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+          <div className="bg-white rounded-lg p-6 max-w-7xl w-full max-h-[80vh] overflow-hidden flex flex-col">
             {/* 헤더 */}
             <div className="flex justify-between items-center mb-4 pb-4 border-b">
               <div>
@@ -2283,8 +2411,8 @@ function ProductList() {
                 <table className="w-full">
                   <thead className="bg-gray-50 sticky top-0">
                     <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">날짜/시간</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">구분</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap min-w-[150px]">날짜/시간</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap min-w-[100px]">구분</th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">수량</th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">이전 재고</th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">이후 재고</th>
@@ -2295,8 +2423,10 @@ function ProductList() {
                   </thead>
                   <tbody>
                     {selectedProductHistory.map((history, index) => (
-                      <tr key={history.id || index} className="border-b hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm">
+                      <tr key={history.id || index} className={`border-b hover:bg-gray-50 ${
+                        history.affectsCurrentStock === false ? 'bg-gray-50 opacity-70' : ''
+                      }`}>
+                        <td className="px-4 py-3 text-sm whitespace-nowrap">
                           <div className="flex items-center gap-2">
                             <Calendar size={14} className="text-gray-400" />
                             {new Date(history.date).toLocaleDateString('ko-KR')}
@@ -2305,17 +2435,26 @@ function ProductList() {
                             <Clock size={12} />
                             {new Date(history.date).toLocaleTimeString('ko-KR')}
                           </div>
+                          {history.affectsCurrentStock === false && (
+                            <div className="mt-1">
+                              <span className="text-xs bg-gray-200 text-gray-600 px-2 py-0.5 rounded">
+                                재고 미반영
+                              </span>
+                            </div>
+                          )}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-4 py-3 whitespace-nowrap">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             history.type === 'inbound' ? 'bg-green-100 text-green-800' :
                             history.type === 'outbound' ? 'bg-red-100 text-red-800' :
                             history.type === 'adjustment' ? 'bg-yellow-100 text-yellow-800' :
+                            history.type === 'disposal' ? 'bg-gray-100 text-gray-800' :
                             'bg-blue-100 text-blue-800'
                           }`}>
                             {history.type === 'inbound' ? '입고' :
                              history.type === 'outbound' ? '출고' :
-                             history.type === 'adjustment' ? '조정' : '이동'}
+                             history.type === 'adjustment' ? '조정' :
+                             history.type === 'disposal' ? '폐기' : '이동'}
                           </span>
                         </td>
                         <td className={`px-4 py-3 text-right text-sm font-medium ${

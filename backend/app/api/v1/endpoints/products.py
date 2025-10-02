@@ -15,8 +15,11 @@ from app.schemas.common import MessageResponse
 from app.services.product_service import ProductService
 from app.models.transaction import Transaction
 from app.models.warehouse import Warehouse
+from app.models.product_bom import ProductBOM
 from sqlalchemy import and_, func
+from sqlalchemy.orm import joinedload, selectinload
 from datetime import datetime, timedelta, date
+from collections import defaultdict
 
 router = APIRouter()
 
@@ -24,7 +27,7 @@ router = APIRouter()
 @router.get("/", response_model=ProductListResponse)
 def get_products(
     skip: int = Query(0, ge=0, description="Skip records"),
-    limit: int = Query(20, ge=1, le=100, description="Limit records"),
+    limit: int = Query(20, ge=1, le=500, description="Limit records"),
     search: Optional[str] = Query(None, description="Search query"),
     category: Optional[str] = Query(None, description="Filter by category"),
     warehouse_id: Optional[UUID] = Query(None, description="Filter by warehouse"),
@@ -32,9 +35,10 @@ def get_products(
     db: Session = Depends(get_current_db)
 ):
     """
-    Get list of products with pagination and filters
+    Get list of products with pagination and filters - 최적화된 버전
     """
-    products = ProductService.get_products(
+    # eager loading으로 warehouse 정보를 함께 가져오기
+    products = ProductService.get_products_optimized(
         db=db,
         skip=skip,
         limit=limit,
@@ -43,7 +47,7 @@ def get_products(
         warehouse_id=warehouse_id,
         is_active=is_active
     )
-    
+
     total = ProductService.count_products(
         db=db,
         search=search,
@@ -51,34 +55,69 @@ def get_products(
         warehouse_id=warehouse_id,
         is_active=is_active
     )
-    
-    # Convert to response model with discrepancy info (1주일 이내 조정 이력 기반)
-    product_responses = []
+
+    # 제품 코드 목록 추출
+    product_codes = [p.product_code for p in products]
+
+    if not product_codes:
+        return ProductListResponse(
+            data=[],
+            pagination={
+                "page": 1,
+                "limit": limit,
+                "total": 0,
+                "total_pages": 0
+            }
+        )
+
+    # 1. 모든 제품의 조정 통계를 한 번에 가져오기
     one_week_ago = datetime.now() - timedelta(days=7)
-    
+    adjustment_stats_query = db.query(
+        Transaction.product_code,
+        func.sum(Transaction.quantity).label('total_adjustment'),
+        func.count(Transaction.id).label('adjustment_count')
+    ).filter(
+        and_(
+            Transaction.product_code.in_(product_codes),
+            Transaction.transaction_type == 'ADJUST',
+            Transaction.transaction_date >= one_week_ago
+        )
+    ).group_by(Transaction.product_code).all()
+
+    # 조정 통계를 딕셔너리로 변환
+    adjustment_stats_map = {
+        row.product_code: {
+            'total_adjustment': int(row.total_adjustment or 0),
+            'adjustment_count': int(row.adjustment_count or 0)
+        }
+        for row in adjustment_stats_query
+    }
+
+    # 2. 모든 제품의 BOM 정보를 한 번에 가져오기
+    bom_items_query = db.query(ProductBOM).filter(
+        ProductBOM.parent_product_code.in_(product_codes)
+    ).all()
+
+    # BOM 정보를 딕셔너리로 변환
+    bom_map = defaultdict(list)
+    for bom in bom_items_query:
+        bom_map[bom.parent_product_code].append({
+            'child_product_code': bom.child_product_code,
+            'quantity': bom.quantity
+        })
+
+    # 제품 응답 생성
+    product_responses = []
     for product in products:
-        # 1주일 이내 모든 ADJUST 트랜잭션의 합계 및 개수 조회
-        adjustment_stats = db.query(
-            func.sum(Transaction.quantity).label('total_adjustment'),
-            func.count(Transaction.id).label('adjustment_count')
-        ).filter(
-            and_(
-                Transaction.product_code == product.product_code,
-                Transaction.transaction_type == 'ADJUST',
-                Transaction.transaction_date >= one_week_ago
-            )
-        ).first()
-        
-        # 제품 데이터를 dict로 변환
         product_dict = {
             "product_code": product.product_code,
             "product_name": product.product_name,
-            "barcode": product.barcode,  # 바코드 필드 추가
+            "barcode": product.barcode,
             "category": product.category,
             "manufacturer": product.manufacturer,
             "supplier": product.supplier,
             "supplier_email": product.supplier_email,
-            "contact_email": product.contact_email,  # 담당자 이메일 필드 추가
+            "contact_email": product.contact_email,
             "order_email_template": product.order_email_template,
             "zone_id": product.zone_id,
             "unit": product.unit,
@@ -92,40 +131,21 @@ def get_products(
             "is_auto_calculated": product.is_auto_calculated if product.is_auto_calculated is not None else False,
             "moq": product.moq or 1,
             "lead_time_days": product.lead_time_days or 7,
-            "memo": product.memo,  # 메모 필드 추가
+            "memo": product.memo,
             "is_active": product.is_active if product.is_active is not None else True,
             "created_at": product.created_at,
             "updated_at": product.updated_at,
-            "warehouse_name": None
+            "warehouse_name": product.warehouse.name if product.warehouse else None,
+            "bom": bom_map.get(product.product_code, [])
         }
 
-        # 창고 정보 추가
-        if product.warehouse_id:
-            warehouse = db.query(Warehouse).filter(Warehouse.id == product.warehouse_id).first()
-            if warehouse:
-                product_dict['warehouse_name'] = warehouse.name
-
-        # BOM 정보 추가
-        from app.models.product_bom import ProductBOM
-        bom_items = db.query(ProductBOM).filter(
-            ProductBOM.parent_product_code == product.product_code
-        ).all()
-
-        product_dict['bom'] = [
-            {
-                'child_product_code': item.child_product_code,
-                'quantity': item.quantity
-            }
-            for item in bom_items
-        ] if bom_items else []
-
-        if adjustment_stats and adjustment_stats.total_adjustment is not None:
-            # 7일간 모든 조정의 합계
-            product_dict['discrepancy'] = int(adjustment_stats.total_adjustment)
+        # 조정 통계 추가
+        stats = adjustment_stats_map.get(product.product_code)
+        if stats:
+            product_dict['discrepancy'] = stats['total_adjustment']
             product_dict['has_pending_discrepancy'] = True
-            # 조정 건수 정보를 last_discrepancy_date 대신 저장
-            product_dict['discrepancy_count'] = int(adjustment_stats.adjustment_count or 0)
-            product_dict['last_discrepancy_date'] = None  # 더 이상 사용하지 않음
+            product_dict['discrepancy_count'] = stats['adjustment_count']
+            product_dict['last_discrepancy_date'] = None
         else:
             product_dict['discrepancy'] = 0
             product_dict['has_pending_discrepancy'] = False
@@ -133,7 +153,7 @@ def get_products(
             product_dict['last_discrepancy_date'] = None
 
         product_responses.append(ProductResponse(**product_dict))
-    
+
     return ProductListResponse(
         data=product_responses,
         pagination={

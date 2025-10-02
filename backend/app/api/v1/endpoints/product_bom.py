@@ -1,41 +1,52 @@
 """
-Product BOM (Bill of Materials) API 엔드포인트
-세트 상품의 구성 요소 관리
+제품 BOM API 엔드포인트
+세트 상품 구성 관리를 위한 API
 """
 from typing import List, Optional
-from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import and_
+from pydantic import BaseModel
+from datetime import datetime
+from uuid import UUID
 
 from app.core.database import get_db
-from app.models.product_bom import ProductBOM
-from app.models.product import Product
-from app.schemas.product_bom import (
-    ProductBOMCreate,
-    ProductBOMUpdate,
-    ProductBOMResponse,
-    ProductBOMListResponse,
-    SetProductStockResponse
-)
+from app.models import ProductBOM, Product
+from app.services.transaction_service import TransactionService
+from app.schemas.transaction import TransactionCreate
+from app.core.timezone_utils import get_current_utc_time
 
 router = APIRouter()
 
+# Pydantic 모델
+class ProductBOMCreate(BaseModel):
+    parent_product_code: str
+    child_product_code: str
+    quantity: int
+
+class ProductBOMResponse(BaseModel):
+    id: UUID
+    parent_product_code: str
+    child_product_code: str
+    child_product_name: str
+    quantity: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+class ProductBOMListResponse(BaseModel):
+    items: List[ProductBOMResponse]
+    total: int
 
 @router.get("/", response_model=ProductBOMListResponse)
-async def get_product_boms(
-    parent_product_code: Optional[str] = Query(None, description="부모 제품 코드"),
-    child_product_code: Optional[str] = Query(None, description="자식 제품 코드"),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+def get_product_boms(
+    parent_product_code: Optional[str] = Query(None),
+    child_product_code: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """
-    BOM 목록 조회
-
-    - parent_product_code: 특정 세트 상품의 구성품 조회
-    - child_product_code: 특정 제품이 포함된 세트 상품 조회
+    제품 BOM 목록 조회
     """
+    # BOM 데이터 조회
     query = db.query(ProductBOM)
 
     if parent_product_code:
@@ -43,244 +54,277 @@ async def get_product_boms(
     if child_product_code:
         query = query.filter(ProductBOM.child_product_code == child_product_code)
 
-    total = query.count()
-    items = query.offset(skip).limit(limit).all()
+    boms = query.all()
 
-    # 관련 제품 정보 조회
-    bom_responses = []
-    for bom in items:
-        parent = db.query(Product).filter(Product.product_code == bom.parent_product_code).first()
-        child = db.query(Product).filter(Product.product_code == bom.child_product_code).first()
-
-        bom_responses.append({
-            "id": bom.id,
-            "parent_product_code": bom.parent_product_code,
-            "parent_product_name": parent.product_name if parent else None,
-            "child_product_code": bom.child_product_code,
-            "child_product_name": child.product_name if child else None,
-            "quantity": bom.quantity,
-            "created_at": bom.created_at,
-            "updated_at": bom.updated_at
-        })
-
-    return {
-        "items": bom_responses,
-        "total": total,
-        "skip": skip,
-        "limit": limit
-    }
-
-
-@router.get("/set-product-stock/{product_code}", response_model=SetProductStockResponse)
-async def get_set_product_stock(
-    product_code: str,
-    db: Session = Depends(get_db)
-):
-    """
-    세트 상품의 재고 가능 수량 계산
-    구성품 재고를 기준으로 생산 가능한 세트 수량 반환
-    """
-    # BOM 구성 조회
-    bom_items = db.query(ProductBOM).filter(
-        ProductBOM.parent_product_code == product_code
-    ).all()
-
-    if not bom_items:
-        raise HTTPException(status_code=404, detail="세트 상품 구성이 없습니다")
-
-    # 각 구성품의 재고로 만들 수 있는 세트 수량 계산
-    min_possible_sets = float('inf')
-    component_stocks = []
-
-    for bom in bom_items:
-        component = db.query(Product).filter(
+    # 응답 아이템 생성
+    response_items = []
+    for bom in boms:
+        # child product name 조회
+        child_product = db.query(Product).filter(
             Product.product_code == bom.child_product_code
         ).first()
 
-        if not component:
-            raise HTTPException(
-                status_code=404,
-                detail=f"구성품을 찾을 수 없습니다: {bom.child_product_code}"
-            )
+        child_product_name = child_product.product_name if child_product else "Unknown"
 
-        # 이 구성품으로 만들 수 있는 세트 수
-        possible_sets = component.current_stock // bom.quantity
-        min_possible_sets = min(min_possible_sets, possible_sets)
+        response_items.append(ProductBOMResponse(
+            id=bom.id,
+            parent_product_code=bom.parent_product_code,
+            child_product_code=bom.child_product_code,
+            child_product_name=child_product_name,
+            quantity=bom.quantity,
+            created_at=bom.created_at,
+            updated_at=bom.updated_at
+        ))
 
-        component_stocks.append({
-            "product_code": component.product_code,
-            "product_name": component.product_name,
-            "required_quantity": bom.quantity,
-            "current_stock": component.current_stock,
-            "possible_sets": possible_sets
-        })
-
-    return {
-        "parent_product_code": product_code,
-        "possible_sets": int(min_possible_sets) if min_possible_sets != float('inf') else 0,
-        "components": component_stocks
-    }
-
+    return ProductBOMListResponse(
+        items=response_items,
+        total=len(response_items)
+    )
 
 @router.post("/", response_model=ProductBOMResponse)
-async def create_product_bom(
-    bom: ProductBOMCreate,
+def create_product_bom(
+    bom_data: ProductBOMCreate,
     db: Session = Depends(get_db)
 ):
     """
-    BOM 생성 (세트 상품 구성 추가)
+    제품 BOM 생성
     """
-    # 부모 제품 확인
-    parent = db.query(Product).filter(Product.product_code == bom.parent_product_code).first()
-    if not parent:
-        raise HTTPException(status_code=404, detail=f"부모 제품을 찾을 수 없습니다: {bom.parent_product_code}")
+    # 부모 제품 존재 확인
+    parent_product = db.query(Product).filter(
+        Product.product_code == bom_data.parent_product_code
+    ).first()
 
-    # 자식 제품 확인
-    child = db.query(Product).filter(Product.product_code == bom.child_product_code).first()
-    if not child:
-        raise HTTPException(status_code=404, detail=f"자식 제품을 찾을 수 없습니다: {bom.child_product_code}")
+    if not parent_product:
+        raise HTTPException(status_code=404, detail="Parent product not found")
 
-    # 순환 참조 확인 (자기 자신을 구성품으로 할 수 없음)
-    if bom.parent_product_code == bom.child_product_code:
-        raise HTTPException(status_code=400, detail="제품은 자기 자신을 구성품으로 가질 수 없습니다")
+    # 자식 제품 존재 확인
+    child_product = db.query(Product).filter(
+        Product.product_code == bom_data.child_product_code
+    ).first()
+
+    if not child_product:
+        raise HTTPException(status_code=404, detail="Child product not found")
+
+    # 순환 참조 방지
+    if bom_data.parent_product_code == bom_data.child_product_code:
+        raise HTTPException(status_code=400, detail="Parent and child cannot be the same")
 
     # 중복 확인
-    existing = db.query(ProductBOM).filter(
+    existing_bom = db.query(ProductBOM).filter(
         and_(
-            ProductBOM.parent_product_code == bom.parent_product_code,
-            ProductBOM.child_product_code == bom.child_product_code
+            ProductBOM.parent_product_code == bom_data.parent_product_code,
+            ProductBOM.child_product_code == bom_data.child_product_code
         )
     ).first()
 
-    if existing:
-        raise HTTPException(status_code=400, detail="이미 존재하는 BOM 구성입니다")
+    if existing_bom:
+        raise HTTPException(status_code=400, detail="BOM already exists")
 
     # BOM 생성
-    db_bom = ProductBOM(
-        parent_product_code=bom.parent_product_code,
-        child_product_code=bom.child_product_code,
-        quantity=bom.quantity
+    new_bom = ProductBOM(
+        parent_product_code=bom_data.parent_product_code,
+        child_product_code=bom_data.child_product_code,
+        quantity=bom_data.quantity
     )
 
-    db.add(db_bom)
+    db.add(new_bom)
     db.commit()
-    db.refresh(db_bom)
+    db.refresh(new_bom)
 
-    return {
-        "id": db_bom.id,
-        "parent_product_code": db_bom.parent_product_code,
-        "parent_product_name": parent.product_name,
-        "child_product_code": db_bom.child_product_code,
-        "child_product_name": child.product_name,
-        "quantity": db_bom.quantity,
-        "created_at": db_bom.created_at,
-        "updated_at": db_bom.updated_at
-    }
-
-
-@router.put("/{bom_id}", response_model=ProductBOMResponse)
-async def update_product_bom(
-    bom_id: UUID,
-    bom_update: ProductBOMUpdate,
-    db: Session = Depends(get_db)
-):
-    """
-    BOM 수정 (수량 변경)
-    """
-    db_bom = db.query(ProductBOM).filter(ProductBOM.id == bom_id).first()
-    if not db_bom:
-        raise HTTPException(status_code=404, detail="BOM을 찾을 수 없습니다")
-
-    # 수량만 업데이트 가능
-    if bom_update.quantity is not None:
-        db_bom.quantity = bom_update.quantity
-
-    db.commit()
-    db.refresh(db_bom)
-
-    # 관련 제품 정보 조회
-    parent = db.query(Product).filter(Product.product_code == db_bom.parent_product_code).first()
-    child = db.query(Product).filter(Product.product_code == db_bom.child_product_code).first()
-
-    return {
-        "id": db_bom.id,
-        "parent_product_code": db_bom.parent_product_code,
-        "parent_product_name": parent.product_name if parent else None,
-        "child_product_code": db_bom.child_product_code,
-        "child_product_name": child.product_name if child else None,
-        "quantity": db_bom.quantity,
-        "created_at": db_bom.created_at,
-        "updated_at": db_bom.updated_at
-    }
-
+    return ProductBOMResponse(
+        id=new_bom.id,
+        parent_product_code=new_bom.parent_product_code,
+        child_product_code=new_bom.child_product_code,
+        child_product_name=child_product.product_name,
+        quantity=new_bom.quantity,
+        created_at=new_bom.created_at,
+        updated_at=new_bom.updated_at
+    )
 
 @router.delete("/{bom_id}")
-async def delete_product_bom(
+def delete_product_bom(
     bom_id: UUID,
     db: Session = Depends(get_db)
 ):
     """
-    BOM 삭제
+    제품 BOM 삭제
     """
-    db_bom = db.query(ProductBOM).filter(ProductBOM.id == bom_id).first()
-    if not db_bom:
-        raise HTTPException(status_code=404, detail="BOM을 찾을 수 없습니다")
+    bom = db.query(ProductBOM).filter(ProductBOM.id == bom_id).first()
 
-    db.delete(db_bom)
+    if not bom:
+        raise HTTPException(status_code=404, detail="BOM not found")
+
+    db.delete(bom)
     db.commit()
 
-    return {"message": "BOM이 삭제되었습니다"}
+    return {"message": "BOM deleted successfully"}
 
-
-@router.post("/bulk", response_model=List[ProductBOMResponse])
-async def create_bulk_product_bom(
-    boms: List[ProductBOMCreate],
+@router.post("/assemble")
+def assemble_set_products(
+    data: dict,
     db: Session = Depends(get_db)
 ):
     """
-    BOM 일괄 생성
-    세트 상품의 여러 구성품을 한 번에 등록
+    세트 제품 조립
     """
-    created_boms = []
+    product_code = data.get('product_code')
+    quantity = data.get('quantity', 1)
 
+    # 세트 제품 확인
+    set_product = db.query(Product).filter(Product.product_code == product_code).first()
+    if not set_product:
+        raise HTTPException(status_code=404, detail="Set product not found")
+
+    # BOM 데이터 가져오기
+    boms = db.query(ProductBOM).filter(ProductBOM.parent_product_code == product_code).all()
+    if not boms:
+        raise HTTPException(status_code=400, detail="No BOM data found for this set")
+
+    # 구성 부품의 재고 확인
     for bom in boms:
-        # 부모 제품 확인
-        parent = db.query(Product).filter(Product.product_code == bom.parent_product_code).first()
-        if not parent:
-            raise HTTPException(status_code=404, detail=f"부모 제품을 찾을 수 없습니다: {bom.parent_product_code}")
-
-        # 자식 제품 확인
-        child = db.query(Product).filter(Product.product_code == bom.child_product_code).first()
-        if not child:
-            raise HTTPException(status_code=404, detail=f"자식 제품을 찾을 수 없습니다: {bom.child_product_code}")
-
-        # 중복 확인
-        existing = db.query(ProductBOM).filter(
-            and_(
-                ProductBOM.parent_product_code == bom.parent_product_code,
-                ProductBOM.child_product_code == bom.child_product_code
-            )
+        child_product = db.query(Product).filter(
+            Product.product_code == bom.child_product_code
         ).first()
 
-        if not existing:
-            db_bom = ProductBOM(
-                parent_product_code=bom.parent_product_code,
-                child_product_code=bom.child_product_code,
-                quantity=bom.quantity
+        if not child_product:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Child product {bom.child_product_code} not found"
             )
-            db.add(db_bom)
-            db.flush()  # ID를 얻기 위해 flush
-            created_boms.append({
-                "id": db_bom.id,
-                "parent_product_code": bom.parent_product_code,
-                "parent_product_name": parent.product_name,
-                "child_product_code": bom.child_product_code,
-                "child_product_name": child.product_name,
-                "quantity": bom.quantity,
-                "created_at": db_bom.created_at,
-                "updated_at": db_bom.updated_at
-            })
 
-    db.commit()
+        required_quantity = bom.quantity * quantity
+        if child_product.current_stock < required_quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient stock for {child_product.product_name}. Need {required_quantity}, have {child_product.current_stock}"
+            )
 
-    return created_boms
+    # 트랜잭션 시작 - 재고 업데이트 및 트랜잭션 기록
+    try:
+        # 1. 세트 제품 입고 트랜잭션 생성
+        set_transaction = TransactionCreate(
+            transaction_type="IN",
+            product_code=set_product.product_code,
+            quantity=quantity,
+            reason="세트 조립",
+            created_by="system",
+            transaction_date=get_current_utc_time()
+        )
+        TransactionService.create_transaction(db, set_transaction, "system")
+
+        # 2. 구성 부품 출고 트랜잭션 생성
+        for bom in boms:
+            child_product = db.query(Product).filter(
+                Product.product_code == bom.child_product_code
+            ).first()
+
+            # 부품 출고 트랜잭션
+            component_transaction = TransactionCreate(
+                transaction_type="OUT",
+                product_code=bom.child_product_code,
+                quantity=bom.quantity * quantity,
+                reason=f"{set_product.product_code}_{set_product.product_name}_세트 조립",
+                created_by="system",
+                transaction_date=get_current_utc_time()
+            )
+            TransactionService.create_transaction(db, component_transaction, "system")
+
+        db.commit()
+
+        # 업데이트된 세트 제품 정보 다시 조회
+        db.refresh(set_product)
+
+        return {
+            "success": True,
+            "message": f"Successfully assembled {quantity} set(s)",
+            "set_product": {
+                "product_code": set_product.product_code,
+                "product_name": set_product.product_name,
+                "new_quantity": set_product.current_stock
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/disassemble")
+def disassemble_set_products(
+    data: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    세트 제품 해체
+    """
+    product_code = data.get('product_code')
+    quantity = data.get('quantity', 1)
+
+    # 세트 제품 확인
+    set_product = db.query(Product).filter(Product.product_code == product_code).first()
+    if not set_product:
+        raise HTTPException(status_code=404, detail="Set product not found")
+
+    # 세트 재고 확인
+    if set_product.current_stock < quantity:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient set stock. Need {quantity}, have {set_product.current_stock}"
+        )
+
+    # BOM 데이터 가져오기
+    boms = db.query(ProductBOM).filter(ProductBOM.parent_product_code == product_code).all()
+    if not boms:
+        raise HTTPException(status_code=400, detail="No BOM data found for this set")
+
+    # 트랜잭션 시작 - 재고 업데이트 및 트랜잭션 기록
+    try:
+        # 1. 세트 제품 출고 트랜잭션 생성
+        set_transaction = TransactionCreate(
+            transaction_type="OUT",
+            product_code=set_product.product_code,
+            quantity=quantity,
+            reason="세트 해체",
+            created_by="system",
+            transaction_date=get_current_utc_time()
+        )
+        TransactionService.create_transaction(db, set_transaction, "system")
+
+        # 2. 구성 부품 입고 트랜잭션 생성
+        for bom in boms:
+            child_product = db.query(Product).filter(
+                Product.product_code == bom.child_product_code
+            ).first()
+
+            if not child_product:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Child product {bom.child_product_code} not found"
+                )
+
+            # 부품 입고 트랜잭션
+            component_transaction = TransactionCreate(
+                transaction_type="IN",
+                product_code=bom.child_product_code,
+                quantity=bom.quantity * quantity,
+                reason="세트 해체",
+                created_by="system",
+                transaction_date=get_current_utc_time()
+            )
+            TransactionService.create_transaction(db, component_transaction, "system")
+
+        db.commit()
+
+        # 업데이트된 세트 제품 정보 다시 조회
+        db.refresh(set_product)
+
+        return {
+            "success": True,
+            "message": f"Successfully disassembled {quantity} set(s)",
+            "set_product": {
+                "product_code": set_product.product_code,
+                "product_name": set_product.product_name,
+                "new_quantity": set_product.current_stock
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))

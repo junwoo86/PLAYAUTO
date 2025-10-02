@@ -7,6 +7,7 @@ from app.models.discrepancy import Discrepancy
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderItem
 from app.models.daily_ledger import DailyLedger
 from app.models.product_bom import ProductBOM
+from app.models.stock_checkpoint import StockCheckpoint, CheckpointType
 
 __all__ = [
     "Product",
@@ -15,5 +16,7 @@ __all__ = [
     "PurchaseOrder",
     "PurchaseOrderItem",
     "DailyLedger",
-    "ProductBOM"
+    "ProductBOM",
+    "StockCheckpoint",
+    "CheckpointType"
 ]

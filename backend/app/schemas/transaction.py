@@ -9,7 +9,7 @@ from datetime import datetime
 
 class TransactionBase(BaseModel):
     """Base transaction schema"""
-    transaction_type: Literal['IN', 'OUT', 'ADJUST'] = Field(..., description="거래 유형")
+    transaction_type: Literal['IN', 'OUT', 'ADJUST', 'DISPOSAL'] = Field(..., description="거래 유형")
     product_code: str = Field(..., max_length=50, description="제품 코드")
     quantity: int = Field(..., description="수량")
     reason: Optional[str] = Field(None, max_length=100, description="사유")
@@ -32,11 +32,15 @@ class TransactionResponse(TransactionBase):
     transaction_date: datetime
     created_at: datetime
     updated_at: datetime
-    
+
+    # Checkpoint related fields
+    affects_current_stock: bool = True
+    checkpoint_id: Optional[UUID] = None
+
     # Related product info
     product_name: Optional[str] = None
     product_code: Optional[str] = None
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 

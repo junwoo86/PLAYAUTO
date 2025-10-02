@@ -4,19 +4,51 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel
 import csv
 import io
 from datetime import datetime
 
 from app.core.database import get_db
-from app.core.timezone_utils import parse_datetime_string
+from app.core.timezone_utils import parse_datetime_string, ensure_timezone_aware
 from app.models.product import Product
 from app.models.transaction import Transaction
+from app.models.stock_checkpoint import StockCheckpoint
 from app.api.v1.endpoints.transactions import create_transaction
 from app.schemas.product import ProductCreate
 
 router = APIRouter()
+
+
+def is_past_transaction(product_code: str, transaction_date: datetime, db: Session) -> bool:
+    """
+    거래가 체크포인트 이전의 과거 이력인지 판단
+
+    Args:
+        product_code: 제품 코드
+        transaction_date: 거래 날짜
+        db: DB 세션
+
+    Returns:
+        True: 과거 이력 (체크포인트 이전)
+        False: 현재/미래 이력
+    """
+    # 해당 제품의 가장 최근 체크포인트 조회
+    latest_checkpoint = db.query(StockCheckpoint).filter(
+        StockCheckpoint.product_code == product_code,
+        StockCheckpoint.is_active == True
+    ).order_by(StockCheckpoint.checkpoint_date.desc()).first()
+
+    if latest_checkpoint:
+        # 거래 날짜가 체크포인트 날짜 이전이면 과거 이력
+        # timezone-aware 비교를 위해 둘 다 timezone-aware로 변환
+        transaction_dt = ensure_timezone_aware(transaction_date)
+        checkpoint_dt = ensure_timezone_aware(latest_checkpoint.checkpoint_date)
+        return transaction_dt <= checkpoint_dt
+
+    # 체크포인트가 없으면 현재 이력
+    return False
 
 class BatchTransaction(BaseModel):
     product_code: str
@@ -67,18 +99,23 @@ def process_batch(
 ):
     """
     일괄 트랜잭션 처리
+
+    과거 이력 처리 로직:
+    - 체크포인트 이전 거래는 이력만 기록 (재고 영향 없음)
+    - 비활성화 제품도 이력 기록 가능
+    - affects_current_stock = False로 저장
     """
     success_count = 0
     failed_count = 0
     errors = []
-    
+
     for idx, trans in enumerate(request.transactions):
         try:
-            # 제품 코드로 제품 찾기
+            # 제품 코드로 제품 찾기 (비활성화 제품도 포함)
             product = db.query(Product).filter(
                 Product.product_code == trans.product_code
             ).first()
-            
+
             if not product:
                 errors.append({
                     "row": idx + 1,
@@ -86,17 +123,23 @@ def process_batch(
                 })
                 failed_count += 1
                 continue
-            
-            # 트랜잭션 생성 데이터 준비 (사용하지 않음 - 직접 생성)
-            # product_code를 사용해야 함
-            
-            # 재고 업데이트 로직
+
+            # 날짜 처리: ISO 형식 문자열을 datetime 객체로 변환
+            transaction_date = parse_datetime_string(trans.date)
+
+            # 과거 이력인지 판단
+            # 1. 비활성화 제품은 항상 과거 이력으로 처리 (이력 기록 목적)
+            # 2. 체크포인트 이전 거래도 과거 이력
+            is_past = (not product.is_active) or is_past_transaction(product.product_code, transaction_date, db)
+
+            # 재고 계산
             previous_stock = product.current_stock
-            
+
             if trans.transaction_type == "IN":
                 new_stock = previous_stock + trans.quantity
             elif trans.transaction_type == "OUT":
-                if trans.quantity > previous_stock:
+                # 과거 이력이 아닐 때만 재고 부족 검증
+                if not is_past and trans.quantity > previous_stock:
                     errors.append({
                         "row": idx + 1,
                         "error": f"재고 부족: 현재 {previous_stock}, 요청 {trans.quantity}"
@@ -114,42 +157,41 @@ def process_batch(
                 })
                 failed_count += 1
                 continue
-            
+
             # 트랜잭션 생성
-            # 날짜 처리: ISO 형식 문자열을 datetime 객체로 변환
-            transaction_date = parse_datetime_string(trans.date)
-            
             transaction = Transaction(
-                product_code=trans.product_code,  # product_code 사용
+                product_code=trans.product_code,
                 transaction_type=trans.transaction_type,
                 quantity=trans.quantity,
                 previous_stock=previous_stock,
                 new_stock=new_stock,
                 reason=trans.reason,
                 memo=trans.memo,
-                location=product.zone_id,  # location 대신 zone_id 사용
-                created_by="batch_process",  # created_by 추가
-                transaction_date=transaction_date  # datetime 객체 사용
+                location=product.zone_id,
+                created_by="batch_process",
+                transaction_date=transaction_date,
+                affects_current_stock=not is_past  # 과거 이력은 재고에 영향 없음
             )
-            
+
             db.add(transaction)
-            
-            # 제품 재고 업데이트
-            product.current_stock = new_stock
-            
+
+            # 과거 이력이 아닐 때만 제품 재고 업데이트
+            if not is_past:
+                product.current_stock = new_stock
+
             success_count += 1
-            
+
         except Exception as e:
             errors.append({
                 "row": idx + 1,
                 "error": str(e)
             })
             failed_count += 1
-    
+
     # 모든 변경사항 커밋
     if success_count > 0:
         db.commit()
-    
+
     return BatchResult(
         success=success_count,
         failed=failed_count,

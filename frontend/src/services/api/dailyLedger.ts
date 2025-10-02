@@ -28,19 +28,19 @@ export interface LedgerSummary {
 export const dailyLedgerAPI = {
   // 일일 수불부 조회
   getAll: (params?: { ledger_date?: string; product_code?: string }) => {
-    return api.get<DailyLedger[]>('/daily-ledger', { params });
+    return api.get<DailyLedger[]>('/daily-ledgers', { params });
   },
 
   // 일일 수불부 생성
   generate: (targetDate: string) => {
-    return api.post<{ message: string; ledgers_created: number }>('/daily-ledger/generate', null, {
+    return api.post<{ message: string; ledgers_created: number }>('/daily-ledgers/generate', null, {
       params: { target_date: targetDate }
     });
   },
 
   // 일일 수불부 요약 조회
   getSummary: (targetDate: string) => {
-    return api.get<LedgerSummary>('/daily-ledger/summary', {
+    return api.get<LedgerSummary>('/daily-ledgers/summary', {
       params: { target_date: targetDate }
     });
   }

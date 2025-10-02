@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    container_name: playauto-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # 데이터베이스 연결 설정
+      - DB_HOST=${DB_HOST:-15.164.112.237}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-bico0211}
+      - DB_NAME=${DB_NAME:-dashboard}
+
+      # 애플리케이션 설정
+      - HOST=0.0.0.0
+      - PORT=8000
+      - LOG_LEVEL=info
+
+      # 스케줄러 설정
+      - SCHEDULER_ENABLED=true
+      - SCHEDULER_TIMEZONE=Asia/Seoul
+
+      # 환경 설정
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Seoul
+
+    volumes:
+      # 로그 디렉토리 마운트
+      - ./logs:/app/logs
+      # 업로드 디렉토리 마운트
+      - ./uploads:/app/uploads
+
+    networks:
+      - playauto-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 선택사항: Redis 캐시 서버
+  redis:
+    image: redis:7-alpine
+    container_name: playauto-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - playauto-network
+    command: redis-server --appendonly yes
+
+  # 선택사항: 로컬 PostgreSQL (개발 환경용)
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: playauto-postgres
+  #   restart: unless-stopped
+  #   environment:
+  #     - POSTGRES_USER=postgres
+  #     - POSTGRES_PASSWORD=postgres
+  #     - POSTGRES_DB=playauto
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   networks:
+  #     - playauto-network
+
+networks:
+  playauto-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  # postgres-data:

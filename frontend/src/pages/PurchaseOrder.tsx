@@ -954,28 +954,25 @@ function PurchaseOrderForm({ onNavigate, id, initialData }: { onNavigate: (page:
 }
 
 // 메인 컴포넌트 - 라우팅 처리
-function PurchaseOrder({ resetKey, initialData }: { resetKey?: number; initialData?: any }) {
-  // initialData를 purchaseOrderData의 초기값으로 사용
+function PurchaseOrder({ initialData }: { initialData?: any }) {
+  // initialData에 따라 초기 페이지 설정
   const [purchaseOrderData, setPurchaseOrderData] = useState<any>(initialData);
-  const [currentPage, setCurrentPage] = useState<'list' | 'new' | string>('list');
+  const [currentPage, setCurrentPage] = useState<'list' | 'new' | string>(initialData ? 'new' : 'list');
   const [editId, setEditId] = useState<string | undefined>(undefined);
-  
+
   // initialData가 변경되면 purchaseOrderData 업데이트 및 새 발주서 작성 페이지로 이동
   React.useEffect(() => {
+    console.log('PurchaseOrder - initialData received:', initialData);
     if (initialData) {
       setPurchaseOrderData(initialData);
       setCurrentPage('new');
+      console.log('PurchaseOrder - Switching to new page with data:', initialData);
+    } else {
+      // initialData가 null이면 목록 페이지로
+      setCurrentPage('list');
+      setPurchaseOrderData(null);
     }
   }, [initialData]);
-  
-  // resetKey가 변경되면 기본 페이지로 돌아감
-  React.useEffect(() => {
-    if (resetKey) {
-      setCurrentPage('list');
-      setEditId(undefined);
-      setPurchaseOrderData(null);  // 데이터 초기화
-    }
-  }, [resetKey, setPurchaseOrderData]);
   
   const handleNavigate = (page: string) => {
     if (page === 'list') {

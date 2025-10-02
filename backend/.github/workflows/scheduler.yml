@@ -1,0 +1,76 @@
+name: Scheduled Tasks
+
+on:
+  schedule:
+    # 매일 00:05 KST (15:05 UTC) - Daily Ledger
+    - cron: '5 15 * * *'
+    # 매일 09:00 KST (00:00 UTC) - 발주서 처리
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 수동 실행 허용
+
+env:
+  BACKEND_URL: ${{ secrets.BACKEND_URL }}
+  SCHEDULER_TOKEN: ${{ secrets.SCHEDULER_TOKEN }}
+
+jobs:
+  daily-ledger:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '5 15 * * *' || github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Trigger Daily Ledger
+      run: |
+        response=$(curl -X POST "${{ env.BACKEND_URL }}/api/v1/scheduler/daily-ledger/run" \
+          -H "Authorization: Bearer ${{ env.SCHEDULER_TOKEN }}" \
+          -H "Content-Type: application/json" \
+          -w "\n%{http_code}")
+
+        http_code=$(echo "$response" | tail -n1)
+        body=$(echo "$response" | head -n-1)
+
+        echo "Response: $body"
+        echo "HTTP Code: $http_code"
+
+        if [ "$http_code" != "200" ]; then
+          echo "Failed to trigger Daily Ledger"
+          exit 1
+        fi
+
+    - name: Notify Success
+      if: success()
+      run: echo "✅ Daily Ledger 생성 완료 - $(date '+%Y-%m-%d %H:%M:%S')"
+
+    - name: Notify Failure
+      if: failure()
+      run: echo "❌ Daily Ledger 생성 실패 - $(date '+%Y-%m-%d %H:%M:%S')"
+
+  purchase-orders:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Trigger Purchase Order Processing
+      run: |
+        response=$(curl -X POST "${{ env.BACKEND_URL }}/api/v1/scheduler/purchase-orders/process" \
+          -H "Authorization: Bearer ${{ env.SCHEDULER_TOKEN }}" \
+          -H "Content-Type: application/json" \
+          -w "\n%{http_code}")
+
+        http_code=$(echo "$response" | tail -n1)
+        body=$(echo "$response" | head -n-1)
+
+        echo "Response: $body"
+        echo "HTTP Code: $http_code"
+
+        if [ "$http_code" != "200" ]; then
+          echo "Failed to process purchase orders"
+          exit 1
+        fi
+
+    - name: Notify Success
+      if: success()
+      run: echo "✅ 발주서 처리 완료 - $(date '+%Y-%m-%d %H:%M:%S')"
+
+    - name: Notify Failure
+      if: failure()
+      run: echo "❌ 발주서 처리 실패 - $(date '+%Y-%m-%d %H:%M:%S')"

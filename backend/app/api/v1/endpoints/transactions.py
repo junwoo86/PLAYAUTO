@@ -16,6 +16,7 @@ from app.schemas.common import MessageResponse
 from app.services.transaction_service import TransactionService
 from app.models.product import Product
 from app.models.discrepancy import Discrepancy
+from sqlalchemy.orm import joinedload
 
 router = APIRouter()
 
@@ -31,9 +32,10 @@ def get_transactions(
     db: Session = Depends(get_current_db)
 ):
     """
-    Get list of transactions with filters
+    Get list of transactions with filters - 최적화된 버전
     """
-    transactions = TransactionService.get_transactions(
+    # eager loading으로 트랜잭션과 Product 정보를 한번에 가져오기
+    transactions = TransactionService.get_transactions_optimized(
         db=db,
         skip=skip,
         limit=limit,
@@ -42,25 +44,43 @@ def get_transactions(
         start_date=start_date,
         end_date=end_date
     )
-    
-    # Add product information
+
+    # 모든 트랜잭션의 product_code 수집
+    product_codes = list(set(trans.product_code for trans in transactions if trans.product_code))
+
+    # 필요한 제품 정보를 한 번에 가져오기
+    products = {}
+    if product_codes:
+        products_query = db.query(Product).filter(Product.product_code.in_(product_codes)).all()
+        products = {p.product_code: p for p in products_query}
+
+    # 트랜잭션 응답 생성
     transaction_responses = []
     for trans in transactions:
         trans_dict = TransactionResponse.model_validate(trans)
-        # Add product info
-        product = db.query(Product).filter(Product.product_code == trans.product_code).first()
-        if product:
+        # 제품 정보 추가
+        if trans.product_code and trans.product_code in products:
+            product = products[trans.product_code]
             trans_dict.product_name = product.product_name
             trans_dict.product_code = product.product_code
         transaction_responses.append(trans_dict)
-    
+
+    # 전체 개수를 위한 별도 쿼리
+    total_count = TransactionService.count_transactions(
+        db=db,
+        product_code=product_code,
+        transaction_type=transaction_type,
+        start_date=start_date,
+        end_date=end_date
+    )
+
     return TransactionListResponse(
         data=transaction_responses,
         pagination={
             "page": skip // limit + 1,
             "limit": limit,
-            "total": len(transaction_responses),
-            "total_pages": (len(transaction_responses) + limit - 1) // limit
+            "total": total_count,
+            "total_pages": (total_count + limit - 1) // limit if total_count > 0 else 0
         }
     )
 

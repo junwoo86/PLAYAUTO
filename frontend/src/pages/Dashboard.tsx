@@ -149,8 +149,7 @@ const Dashboard = React.memo(() => {
             color="red"
             icon={TrendingDown}
             subStats={[
-              { label: '총 손실액', value: `₩${Math.round(monthly?.totalLossAmount || 0).toLocaleString()}` },
-              { label: '건당 평균', value: `₩${Math.round(monthly?.averageLoss || 0).toLocaleString()}` }
+              { label: '총 손실액', value: `₩${Math.round(monthly?.totalLossAmount || 0).toLocaleString()}` }
             ]}
           />
           
@@ -216,70 +215,76 @@ const Dashboard = React.memo(() => {
         </div>
       </div>
 
-      {/* 주간 조정 분석 */}
+      {/* 주요 카테고리 출고 분석 */}
       <div className="mb-8">
         <h3 className="text-lg font-semibold text-gray-800 mb-4">
-          주간 조정 분석
+          주요 카테고리 출고 분석
           <span className="text-sm text-gray-500 ml-2">최근 4주</span>
         </h3>
         <div className="grid grid-cols-2 gap-6">
-          {/* 조정 사유 분포 - 왼쪽 */}
+          {/* 검사권 출고 TOP 6 - 왼쪽 */}
           <ChartCard
-            title="조정 사유 TOP 5"
-            value={`${monthly?.totalAdjustments || 0}건`}
-            subtitle="이번 달 총 조정"
-            color="purple"
-          >
-            <div className="space-y-2 mt-4">
-              {Object.entries(weekly?.reasonBreakdown || {})
-                .sort(([,a], [,b]) => b - a)
-                .slice(0, 5)
-                .map(([reason, percentage]) => (
-                  <div key={reason} className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">{reason}</span>
-                    <div className="flex items-center gap-2">
-                      <div className="w-24 bg-gray-200 rounded-full h-2">
-                        <div 
-                          className="bg-purple-500 h-2 rounded-full"
-                          style={{ width: `${percentage}%` }}
-                        />
-                      </div>
-                      <span className="text-sm font-medium w-12 text-right">{percentage}%</span>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </ChartCard>
-
-          {/* 주요 조정 품목 - 오른쪽 */}
-          <ChartCard
-            title="주요 조정 품목 TOP 5"
-            value={`${(weekly?.topAdjustedProducts || []).length}개 품목`}
-            subtitle="이번 달 기준"
-            color="red"
+            title="검사권 출고 TOP 6"
+            value={`${(weekly?.testKitTop6 || []).reduce((sum: number, item: any) => sum + item.quantity, 0).toLocaleString()}개`}
+            subtitle="4주간 총 출고량"
+            color="blue"
           >
             <div className="space-y-3 mt-4">
-              {(weekly?.topAdjustedProducts || []).slice(0, 5).map((product: any, idx: number) => (
-                <div key={product.productId} className="flex items-center justify-between p-2 hover:bg-gray-50 rounded transition-colors">
+              {(weekly?.testKitTop6 || []).map((product: any, idx: number) => (
+                <div key={product.productName} className="flex items-center justify-between p-2 hover:bg-gray-50 rounded transition-colors">
                   <div className="flex items-center gap-2">
                     <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-                      idx === 0 ? 'bg-red-100 text-red-600' : 
-                      idx === 1 ? 'bg-orange-100 text-orange-600' : 
+                      idx === 0 ? 'bg-blue-100 text-blue-600' :
+                      idx === 1 ? 'bg-sky-100 text-sky-600' :
                       'bg-gray-100 text-gray-600'
                     }`}>
                       {idx + 1}
                     </span>
                     <div className="flex-1">
                       <p className="text-sm font-medium text-gray-900 truncate">{product.productName}</p>
-                      <p className="text-xs text-gray-500">{product.adjustmentCount}회</p>
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-bold text-red-600">{product.totalQuantity}</p>
-                    <p className="text-xs text-gray-500">조정량</p>
+                    <p className="text-sm font-bold text-blue-600">{product.quantity.toLocaleString()}개</p>
                   </div>
                 </div>
               ))}
+              {(!weekly?.testKitTop6 || weekly.testKitTop6.length === 0) && (
+                <p className="text-center text-gray-500 text-sm py-4">출고 내역이 없습니다</p>
+              )}
+            </div>
+          </ChartCard>
+
+          {/* 영양제 출고 TOP 6 - 오른쪽 */}
+          <ChartCard
+            title="영양제 출고 TOP 6"
+            value={`${(weekly?.supplementTop6 || []).reduce((sum: number, item: any) => sum + item.quantity, 0).toLocaleString()}개`}
+            subtitle="4주간 총 출고량"
+            color="green"
+          >
+            <div className="space-y-3 mt-4">
+              {(weekly?.supplementTop6 || []).map((product: any, idx: number) => (
+                <div key={product.productName} className="flex items-center justify-between p-2 hover:bg-gray-50 rounded transition-colors">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                      idx === 0 ? 'bg-green-100 text-green-600' :
+                      idx === 1 ? 'bg-emerald-100 text-emerald-600' :
+                      'bg-gray-100 text-gray-600'
+                    }`}>
+                      {idx + 1}
+                    </span>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-gray-900 truncate">{product.productName}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-green-600">{product.quantity.toLocaleString()}개</p>
+                  </div>
+                </div>
+              ))}
+              {(!weekly?.supplementTop6 || weekly.supplementTop6.length === 0) && (
+                <p className="text-center text-gray-500 text-sm py-4">출고 내역이 없습니다</p>
+              )}
             </div>
           </ChartCard>
         </div>

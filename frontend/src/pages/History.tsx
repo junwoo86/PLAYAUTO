@@ -19,7 +19,7 @@ import { parseUTCToLocal, formatKoreanDateTimeShort, getDateRangeFilter } from '
 
 interface HistoryItem {
   id: string;
-  type: 'inbound' | 'outbound' | 'adjustment' | 'transfer';
+  type: 'inbound' | 'outbound' | 'adjustment' | 'transfer' | 'disposal';
   date: Date;
   user: string;
   items: {
@@ -141,6 +141,7 @@ function HistoryPage() {
       case 'outbound': return <TrendingUp className="text-red-600" size={20} />;
       case 'adjustment': return <Settings className="text-blue-600" size={20} />;
       case 'transfer': return <ArrowRightLeft className="text-purple-600" size={20} />;
+      case 'disposal': return <Trash2 className="text-orange-600" size={20} />;
       default: return <Package className="text-gray-600" size={20} />;
     }
   };
@@ -151,6 +152,7 @@ function HistoryPage() {
       case 'outbound': return '출고';
       case 'adjustment': return '조정';
       case 'transfer': return '이동';
+      case 'disposal': return '폐기';
       default: return '기타';
     }
   };
@@ -161,6 +163,7 @@ function HistoryPage() {
       case 'outbound': return 'bg-red-100 text-red-800';
       case 'adjustment': return 'bg-blue-100 text-blue-800';
       case 'transfer': return 'bg-purple-100 text-purple-800';
+      case 'disposal': return 'bg-orange-100 text-orange-800';
       default: return 'bg-gray-100 text-gray-800';
     }
   };
@@ -187,13 +190,14 @@ function HistoryPage() {
 
     // 실제 API 데이터를 HistoryItem으로 변환
     return filteredTransactions.map(trans => {
-      const transactionType = trans.transaction_type === 'IN' ? 'inbound' : 
-                             trans.transaction_type === 'OUT' ? 'outbound' : 
-                             trans.transaction_type === 'ADJUST' ? 'adjustment' : 'transfer';
+      const transactionType = trans.transaction_type === 'IN' ? 'inbound' :
+                             trans.transaction_type === 'OUT' ? 'outbound' :
+                             trans.transaction_type === 'ADJUST' ? 'adjustment' :
+                             trans.transaction_type === 'DISPOSAL' ? 'disposal' : 'transfer';
       
       return {
         id: trans.id,
-        type: transactionType as 'inbound' | 'outbound' | 'adjustment' | 'transfer',
+        type: transactionType as 'inbound' | 'outbound' | 'adjustment' | 'transfer' | 'disposal',
         date: parseUTCToLocal(trans.transaction_date || trans.created_at),
         user: trans.created_by || '관리자',
         items: [{
@@ -585,7 +589,7 @@ function HistoryPage() {
               <div>
                 <label className="block text-sm font-medium mb-2">거래 유형</label>
                 <div className="space-y-3">
-                  {['inbound', 'outbound', 'adjustment', 'transfer'].map(type => (
+                  {['inbound', 'outbound', 'adjustment', 'transfer', 'disposal'].map(type => (
                     <CheckboxField
                       key={type}
                       label={getTypeLabel(type)}

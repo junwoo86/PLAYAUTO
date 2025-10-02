@@ -65,6 +65,9 @@ class Product(Base):
     # BOM 관계 (세트상품)
     parent_boms = relationship("ProductBOM", foreign_keys="ProductBOM.parent_product_code", back_populates="parent_product")
     child_boms = relationship("ProductBOM", foreign_keys="ProductBOM.child_product_code", back_populates="child_product")
-    
+
+    # 체크포인트 관계
+    checkpoints = relationship("StockCheckpoint", back_populates="product", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<Product {self.product_code}: {self.product_name}>"

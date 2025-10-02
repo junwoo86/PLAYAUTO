@@ -75,8 +75,13 @@ function BatchProcess() {
   
   const fetchProducts = async () => {
     try {
-      const response = await productAPI.getAll();
-      setProducts(response.data || []);
+      // 비활성화된 제품도 포함하여 조회 (과거 이력 기록을 위해)
+      // limit은 백엔드에서 최대 500으로 제한됨
+      // 활성화/비활성화 제품을 각각 조회해서 합침
+      const activeResponse = await productAPI.getAll(0, 500, undefined, undefined, undefined, true);
+      const inactiveResponse = await productAPI.getAll(0, 500, undefined, undefined, undefined, false);
+      const allProducts = [...(activeResponse.data || []), ...(inactiveResponse.data || [])];
+      setProducts(allProducts);
     } catch (error) {
       showError('제품 목록을 불러오는데 실패했습니다');
     }
@@ -333,6 +338,19 @@ function BatchProcess() {
       
       for (let i = 1; i < lines.length; i++) {
         const values = parseCSVLine(lines[i]);
+
+        // 날짜 형식 변환 (2025.9.30 -> 2025-09-30)
+        let dateValue = values[6] || '';
+        if (dateValue && dateValue.includes('.')) {
+          const parts = dateValue.split('.');
+          if (parts.length === 3) {
+            const year = parts[0];
+            const month = parts[1].padStart(2, '0');
+            const day = parts[2].padStart(2, '0');
+            dateValue = `${year}-${month}-${day}`;
+          }
+        }
+
         const row: TransactionRow = {
           category: values[0] || '',
           productCode: values[1] || '',
@@ -340,7 +358,7 @@ function BatchProcess() {
           manufacturer: values[3] || '',
           inbound: parseInt(values[4]) || 0,
           outbound: parseInt(values[5]) || 0,
-          date: values[6] || new Date().toISOString().split('T')[0],
+          date: dateValue || new Date().toISOString().split('T')[0],
           memo: values[7] || '',
           status: 'valid'
         };
@@ -353,9 +371,17 @@ function BatchProcess() {
         } else if (row.inbound === 0 && row.outbound === 0) {
           row.status = 'warning';
           row.errorMessage = '입고/출고 수량이 모두 0입니다';
-        } else if (row.outbound > product.current_stock) {
-          row.status = 'error';
-          row.errorMessage = `재고 부족 (현재: ${product.current_stock}개)`;
+        } else {
+          // 비활성화 제품 경고
+          if (!product.is_active) {
+            row.status = 'warning';
+            row.errorMessage = `비활성화된 제품 (과거 이력 기록용)`;
+          }
+          // 재고 부족 경고 (과거 이력일 경우 백엔드에서 처리)
+          else if (row.outbound > product.current_stock + row.inbound) {
+            row.status = 'warning';
+            row.errorMessage = `재고 부족 가능성 (현재: ${product.current_stock}개 + 입고: ${row.inbound}개 = ${product.current_stock + row.inbound}개 < 출고: ${row.outbound}개) - 과거 이력이면 처리됨`;
+          }
         }
         
         data.push(row);
@@ -439,6 +465,23 @@ function BatchProcess() {
       const existingSKUs = new Set(products.map(p => p.product_code));
       const existingNames = new Set(products.map(p => p.product_name));
 
+      // 숫자 파싱 헬퍼 함수 (천 단위 구분자 제거)
+      const parseNumber = (value: string | undefined): number => {
+        if (!value) return 0;
+        // 쉼표 제거 후 파싱
+        const cleanValue = value.toString().replace(/,/g, '');
+        return parseInt(cleanValue) || 0;
+      };
+
+      // 안전재고 파싱 함수 (최소값 1 보장)
+      const parseSafetyStock = (value: string | undefined): number => {
+        if (!value || value === '-' || value === '0') return 1;
+        // 쉼표 제거 후 파싱
+        const cleanValue = value.toString().replace(/,/g, '');
+        const parsed = parseInt(cleanValue);
+        return parsed > 0 ? parsed : 1;
+      };
+
       for (let i = 0; i < lines.length; i++) {
         const values = parseCSVLine(lines[i]);
 
@@ -452,19 +495,19 @@ function BatchProcess() {
           category: values[3]?.trim() || '',
           manufacturer: values[4]?.trim() || '',
           unit: values[5]?.trim() || '개',
-          initialStock: parseInt(values[6]) || 0,
-          safetyStock: parseInt(values[7]) || 0,
+          initialStock: parseNumber(values[6]),
+          safetyStock: parseSafetyStock(values[7]),
           purchasePrice: 0,  // 기본값 0
           purchaseCurrency: 'KRW',  // 기본값 KRW
-          salePrice: parseFloat(values[8]) || 0,
+          salePrice: parseFloat(values[8]?.replace(/,/g, '')) || 0,
           saleCurrency: values[9]?.trim() || 'KRW',
           zoneId: values[10]?.trim() || '',
           warehouse: values[11]?.trim() || '',  // 창고 필드 추가
           supplier: values[12]?.trim() || '',
           supplierEmail: values[13]?.trim() || '',
           contactEmail: values[14]?.trim() || '',
-          leadTime: parseInt(values[15]) || 0,
-          moq: parseInt(values[16]) || 0,
+          leadTime: parseNumber(values[15]),
+          moq: parseNumber(values[16]),
           memo: values[17]?.trim() || '',
           status: 'valid',
           errorMessage: ''
@@ -567,24 +610,44 @@ function BatchProcess() {
         
         // 입고 처리
         if (row.inbound > 0) {
+          // 날짜가 있으면 해당 날짜의 현재 시간을 사용
+          let transactionDate = getLocalDateTimeString();
+          if (row.date) {
+            const now = new Date();
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            transactionDate = `${row.date}T${hours}:${minutes}:${seconds}+09:00`;
+          }
+
           transactions.push({
             product_code: row.productCode,
             product_name: row.productName,
             transaction_type: 'IN',
             quantity: row.inbound,
-            date: row.date ? `${row.date}T00:00:00+09:00` : getLocalDateTimeString(),  // 날짜가 있으면 KST 00:00으로, 없으면 현재 시간
+            date: transactionDate,
             memo: row.memo || '일괄 입고 처리'
           });
         }
-        
+
         // 출고 처리
         if (row.outbound > 0) {
+          // 날짜가 있으면 해당 날짜의 현재 시간을 사용
+          let transactionDate = getLocalDateTimeString();
+          if (row.date) {
+            const now = new Date();
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            transactionDate = `${row.date}T${hours}:${minutes}:${seconds}+09:00`;
+          }
+
           transactions.push({
             product_code: row.productCode,
             product_name: row.productName,
             transaction_type: 'OUT',
             quantity: row.outbound,
-            date: row.date ? `${row.date}T00:00:00+09:00` : getLocalDateTimeString(),  // 날짜가 있으면 KST 00:00으로, 없으면 현재 시간
+            date: transactionDate,
             memo: row.memo || '일괄 출고 처리'
           });
         }

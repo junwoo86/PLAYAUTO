@@ -43,7 +43,11 @@ const CancelReturn: React.FC = () => {
 
   const fetchProducts = async () => {
     try {
-      const response = await api.get('/products');
+      const response = await api.get('/products', {
+        params: {
+          limit: 500  // 모든 제품을 가져오기 위해 limit 증가
+        }
+      });
       const data = response.data.items || response.data.data || response.data || [];
       setProducts(Array.isArray(data) ? data : []);
     } catch (error) {
@@ -165,9 +169,9 @@ const CancelReturn: React.FC = () => {
         transactionData.transaction_type = 'IN';
         transactionData.reason = 'return_restock';
       } else if (processType === 'return-damaged') {
-        // 반품(파손): 재고 조정 (ADJUST로 처리, 수량 0)
-        transactionData.transaction_type = 'ADJUST';
-        transactionData.quantity = 0;
+        // 반품(파손): 폐기 처리 (DISPOSAL로 처리)
+        transactionData.transaction_type = 'DISPOSAL';
+        transactionData.quantity = quantity; // 실제 폐기 수량
         transactionData.reason = 'return_damaged';
       }
 
@@ -185,7 +189,7 @@ const CancelReturn: React.FC = () => {
         toastMessage = `${selectedProduct.product_name} ${quantity}${selectedProduct.unit} 반품(양호) 처리가 완료되었습니다. (재고에 반영됨)`;
       } else if (processType === 'return-damaged') {
         actionText = '반품(파손-폐기)';
-        toastMessage = `${selectedProduct.product_name} ${quantity}${selectedProduct.unit} 반품(파손) 처리가 완료되었습니다. (폐기 처리됨)`;
+        toastMessage = `${selectedProduct.product_name} ${quantity}${selectedProduct.unit} 반품(파손) 처리가 완료되었습니다. (재고에 영향 없이 폐기 기록됨)`;
       }
 
       if (processType === 'return-damaged') {
@@ -252,7 +256,7 @@ const CancelReturn: React.FC = () => {
                 {showDropdown && searchTerm && (
                   <div className="absolute z-10 w-full mt-1 bg-white border rounded-lg shadow-lg max-h-60 overflow-auto">
                     {filteredProducts.length > 0 ? (
-                      filteredProducts.slice(0, 5).map(product => (
+                      filteredProducts.map(product => (
                         <div
                           key={product.product_code}
                           onClick={() => handleProductSelect(product)}

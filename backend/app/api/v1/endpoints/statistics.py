@@ -116,24 +116,78 @@ def get_dashboard_stats(
     else:
         average_accuracy = 100.0
     
-    # 주간 통계
-    week_transactions = db.query(Transaction).filter(
-        Transaction.transaction_date >= week_start_dt
+    # 주간 통계 (최근 4주간 출고 데이터)
+    four_weeks_ago = today - timedelta(weeks=4)
+    four_weeks_ago_dt = datetime.combine(four_weeks_ago, datetime.min.time())
+
+    # 최근 4주간 출고 거래 조회
+    recent_out_transactions = db.query(Transaction).filter(
+        and_(
+            Transaction.transaction_type == "OUT",
+            Transaction.transaction_date >= four_weeks_ago_dt
+        )
     ).all()
-    
-    week_adjustments = [t for t in week_transactions if t.transaction_type == "ADJUST"]
+
+    # 카테고리별 제품 출고량 집계
+    category_product_outbound = {
+        "검사권": {},
+        "영양제": {}
+    }
+
+    for trans in recent_out_transactions:
+        product = next((p for p in products if p.product_code == trans.product_code), None)
+        if product:
+            if product.category == "검사권":
+                if product.product_name not in category_product_outbound["검사권"]:
+                    category_product_outbound["검사권"][product.product_name] = 0
+                category_product_outbound["검사권"][product.product_name] += abs(trans.quantity)
+            elif product.category == "영양제":
+                if product.product_name not in category_product_outbound["영양제"]:
+                    category_product_outbound["영양제"][product.product_name] = 0
+                category_product_outbound["영양제"][product.product_name] += abs(trans.quantity)
+
+    # 각 카테고리별 TOP 6 정렬
+    test_kit_top6 = sorted(
+        category_product_outbound["검사권"].items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:6]
+
+    supplement_top6 = sorted(
+        category_product_outbound["영양제"].items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:6]
+
+    # 데이터 형식 변환
+    test_kit_top6_list = [
+        {"productName": name, "quantity": qty}
+        for name, qty in test_kit_top6
+    ]
+
+    supplement_top6_list = [
+        {"productName": name, "quantity": qty}
+        for name, qty in supplement_top6
+    ]
+
+    week_adjustments = [t for t in week_transactions if t.transaction_type == "ADJUST"] if 'week_transactions' in locals() else []
     week_adjustment_count = len(week_adjustments)
     
     # 월간 통계
     month_transactions = db.query(Transaction).filter(
         Transaction.transaction_date >= month_start_dt
     ).all()
-    
+
     month_adjustments = [t for t in month_transactions if t.transaction_type == "ADJUST"]
     month_adjustment_count = len(month_adjustments)
-    
-    # 월간 순 손실액 계산 (마이너스 조정은 손실, 플러스 조정은 이득으로 차감)
+
+    # 월간 폐기 거래 조회 (DISPOSAL 타입)
+    month_disposals = [t for t in month_transactions if t.transaction_type == "DISPOSAL"]
+
+    # 월간 순 손실액 계산 (마이너스 조정은 손실, 플러스 조정은 이득으로 차감, 폐기는 손실로 추가)
     month_loss = 0
+
+    # 조정 거래 손실액 계산
     for t in month_adjustments:
         product = next((p for p in products if p.product_code == t.product_code), None)
         if product:
@@ -144,16 +198,20 @@ def get_dashboard_stats(
                 adjustment_amount = t.quantity * product.sale_price
             # 마이너스는 손실(+), 플러스는 이득(-)으로 계산
             month_loss -= adjustment_amount  # quantity가 음수면 손실 증가, 양수면 손실 감소
+
+    # 폐기 거래 손실액 계산 (폐기는 항상 손실로 추가)
+    for t in month_disposals:
+        product = next((p for p in products if p.product_code == t.product_code), None)
+        if product:
+            # 구매가 기준으로 폐기 손실 계산
+            if product.purchase_currency == 'USD':
+                disposal_amount = t.quantity * product.purchase_price * USD_TO_KRW
+            else:
+                disposal_amount = t.quantity * product.purchase_price
+            # 폐기는 항상 손실로 추가
+            month_loss += disposal_amount  # quantity가 양수이므로 손실 증가
     
-    # 조정 사유 분석
-    reason_breakdown = {}
-    for t in week_adjustments:
-        reason = t.reason or "기타"
-        reason_breakdown[reason] = reason_breakdown.get(reason, 0) + 1
-    
-    # 퍼센트로 변환
-    total_reasons = sum(reason_breakdown.values()) if reason_breakdown else 1
-    reason_breakdown_pct = {k: round(v/total_reasons * 100, 1) for k, v in reason_breakdown.items()}
+    # 주간 분석을 위한 기본 데이터 설정 (조정 분석 제거)
     
     # 자주 조정되는 제품 TOP
     product_adjustments = {}
@@ -257,16 +315,14 @@ def get_dashboard_stats(
             "exchangeRate": USD_TO_KRW
         },
         "weekly": {
-            "totalAdjustments": week_adjustment_count,
+            "testKitTop6": test_kit_top6_list,
+            "supplementTop6": supplement_top6_list,
             "accuracyRate": round(average_accuracy, 1),
-            "accuracyTrend": accuracy_trend,
-            "reasonBreakdown": reason_breakdown_pct,
-            "topAdjustedProducts": top_adjusted_products[:6]
+            "accuracyTrend": accuracy_trend
         },
         "monthly": {
-            "totalAdjustments": month_adjustment_count,
-            "totalLossAmount": round(month_loss, 0),
-            "averageLoss": round(month_loss / max(month_adjustment_count, 1), 0)
+            "totalAdjustments": month_adjustment_count,  # 조정 건수만 (폐기 제외)
+            "totalLossAmount": round(month_loss, 0)  # 총 손실액 (조정 + 폐기 포함)
         },
         "categoryOutboundTrend": category_outbound_trend,
         "pendingDiscrepancies": []  # 실제로는 별도 테이블에서 가져와야 함

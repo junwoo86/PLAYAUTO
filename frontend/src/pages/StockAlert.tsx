@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   AlertCircle, Bell, Package, ShoppingCart, TrendingDown, RefreshCw, CheckCircle, X
 } from 'lucide-react';
-import { productAPI } from '../services/api';
-import { showSuccess, showError, showWarning, showInfo } from '../utils/toast';
-import { useNavigate } from 'react-router-dom';
+import { productAPI, purchaseOrderAPI } from '../services/api';
+import { useToast } from '../contexts/ToastContext';
+import { useAppContext } from '../App';
 
 interface Product {
   id: string;
@@ -31,22 +31,59 @@ interface StockAlert {
 }
 
 const StockAlertPage: React.FC = () => {
-  const navigate = useNavigate();
+  const { setActivePage, setPurchaseOrderData } = useAppContext();
+  const { showError, showWarning, showInfo, showSuccess } = useToast();
   const [alerts, setAlerts] = useState<StockAlert[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [filterLevel, setFilterLevel] = useState<'all' | 'danger' | 'warning' | 'low'>('all');
   const [selectedAlert, setSelectedAlert] = useState<StockAlert | null>(null);
   const [showOrderModal, setShowOrderModal] = useState(false);
+  const [purchaseOrderStatuses, setPurchaseOrderStatuses] = useState<Map<string, { status: string; poNumber: string }>>(new Map());
+  const alertShownRef = useRef(false);
 
   useEffect(() => {
-    fetchStockAlerts();
+    // StrictMode에서도 한 번만 실행되도록 보장
+    if (!alertShownRef.current) {
+      fetchStockAlerts(true);
+    }
+    return () => {
+      // 컴포넌트가 언마운트될 때 리셋
+      alertShownRef.current = false;
+    };
   }, []);
 
-  const fetchStockAlerts = async () => {
+  const fetchStockAlerts = async (isInitialLoad = false) => {
     setIsLoading(true);
     try {
+      // 제품 목록 조회
       const response = await productAPI.getAll();
       const products: Product[] = response.data;
+
+      // 발주서 목록 조회
+      const ordersResponse = await purchaseOrderAPI.getAll();
+      // API 응답 구조 확인 - data 속성이 없으면 직접 사용
+      const orders = Array.isArray(ordersResponse.data) ? ordersResponse.data :
+                     Array.isArray(ordersResponse) ? ordersResponse : [];
+
+      // 제품별 발주 상태 매핑 (완료되지 않은 발주서만)
+      const statusMap = new Map<string, { status: string; poNumber: string }>();
+
+      orders.forEach((order: any) => {
+        // draft, pending, partial 상태만 포함 (completed와 cancelled 제외)
+        if (order.status !== 'completed' && order.status !== 'cancelled' && order.items) {
+          order.items.forEach((item: any) => {
+            const productCode = item.product_code || item.productCode;
+            if (productCode && !statusMap.has(productCode)) {
+              statusMap.set(productCode, {
+                status: order.status,
+                poNumber: order.po_number || order.poNumber
+              });
+            }
+          });
+        }
+      });
+
+      setPurchaseOrderStatuses(statusMap);
       
       // 재고 부족 제품 필터링 및 알림 생성
       const stockAlerts: StockAlert[] = products
@@ -91,11 +128,32 @@ const StockAlertPage: React.FC = () => {
       // 위험 수준 알림 표시
       const dangerCount = stockAlerts.filter(a => a.alertLevel === 'danger').length;
       const warningCount = stockAlerts.filter(a => a.alertLevel === 'warning').length;
-      
-      if (dangerCount > 0) {
-        showError(`긴급: ${dangerCount}개 제품이 최소 재고 이하입니다!`);
-      } else if (warningCount > 0) {
-        showError(`경고: ${warningCount}개 제품의 재고가 부족합니다`);
+      const lowCount = stockAlerts.filter(a => a.alertLevel === 'low').length;
+
+      // 발주 상태가 없는 제품 수 계산
+      const noPurchaseOrderCount = stockAlerts.filter(alert =>
+        !statusMap.has(alert.product.product_code)
+      ).length;
+
+      // 초기 로드 시에만 토스트 메시지 표시 (중복 방지)
+      if (isInitialLoad && !alertShownRef.current) {
+        alertShownRef.current = true;
+
+        // 주의 수준별 알림 표시
+        if (dangerCount > 0) {
+          showError(`긴급: ${dangerCount}개 제품이 최소 재고 이하입니다!`);
+        } else if (warningCount > 0) {
+          showWarning(`경고: ${warningCount}개 제품의 재고가 부족합니다`);
+        } else if (lowCount > 0) {
+          showInfo(`주의: ${lowCount}개 제품의 재고 확인이 필요합니다`);
+        }
+
+        // 발주 상태가 없는 제품이 있으면 추가 알림
+        if (noPurchaseOrderCount > 0) {
+          setTimeout(() => {
+            showWarning(`발주 필요: ${noPurchaseOrderCount}개 제품에 발주가 필요합니다`);
+          }, 300);
+        }
       }
     } catch (error) {
       console.error('재고 알림 조회 실패:', error);
@@ -219,8 +277,17 @@ const StockAlertPage: React.FC = () => {
                     quantity: String(alert.suggestedOrderQuantity)
                   });
 
+                  // 발주 데이터를 컨텍스트에 저장 (PurchaseOrderForm이 기대하는 구조)
+                  setPurchaseOrderData({
+                    product_code: alert.product.product_code,
+                    product_name: alert.product.product_name,
+                    quantity: alert.suggestedOrderQuantity,
+                    supplier: alert.product.supplier || '',
+                    moq: alert.product.moq || 0
+                  });
+
                   showSuccess('발주 페이지로 이동합니다');
-                  navigate(`/purchase-order?${params.toString()}`);
+                  setActivePage('purchase-order');
                   onClose();
                 }}
                 className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
@@ -443,17 +510,48 @@ const StockAlertPage: React.FC = () => {
                       )}
                     </div>
                   </div>
-                  
-                  <button
-                    onClick={() => {
-                      setSelectedAlert(alert);
-                      setShowOrderModal(true);
-                    }}
-                    className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-                  >
-                    <ShoppingCart className="inline h-4 w-4 mr-2" />
-                    발주 제안
-                  </button>
+
+                  {/* 발주 상태 확인 후 표시 */}
+                  {(() => {
+                    const orderStatus = purchaseOrderStatuses.get(alert.product.product_code);
+                    if (orderStatus) {
+                      // 발주서가 있는 경우 상태 표시
+                      const statusLabels: { [key: string]: string } = {
+                        'draft': '임시 저장',
+                        'pending': '발주 완료',
+                        'partial': '부분 입고'
+                      };
+                      const statusColors: { [key: string]: string } = {
+                        'draft': 'bg-gray-100 text-gray-800 border-gray-300',
+                        'pending': 'bg-yellow-100 text-yellow-800 border-yellow-300',
+                        'partial': 'bg-blue-100 text-blue-800 border-blue-300'
+                      };
+                      return (
+                        <div className="flex flex-col items-end gap-1">
+                          <span className={`px-3 py-1.5 text-sm font-medium rounded-lg border ${statusColors[orderStatus.status] || 'bg-gray-100 text-gray-800 border-gray-300'}`}>
+                            {statusLabels[orderStatus.status] || orderStatus.status}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {orderStatus.poNumber}
+                          </span>
+                        </div>
+                      );
+                    } else {
+                      // 발주서가 없는 경우 발주 제안 버튼 표시
+                      return (
+                        <button
+                          onClick={() => {
+                            setSelectedAlert(alert);
+                            setShowOrderModal(true);
+                          }}
+                          className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                        >
+                          <ShoppingCart className="inline h-4 w-4 mr-2" />
+                          발주 제안
+                        </button>
+                      );
+                    }
+                  })()}
                 </div>
               </div>
             );

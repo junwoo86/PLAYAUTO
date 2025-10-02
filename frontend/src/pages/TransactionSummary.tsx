@@ -32,7 +32,11 @@ const TransactionSummaryPage: React.FC = () => {
         outbound: item.out_quantity || 0,
         adjustment: item.adjustment_quantity || 0
       }));
-      setSummaryData(formattedData);
+      // 최신 날짜가 상단에 오도록 정렬
+      const sortedData = formattedData.sort((a: any, b: any) => {
+        return new Date(b.date).getTime() - new Date(a.date).getTime();
+      });
+      setSummaryData(sortedData);
     } catch (error) {
       console.error('입출고 요약 데이터 로딩 실패:', error);
       showError('입출고 요약 데이터를 불러오는데 실패했습니다');

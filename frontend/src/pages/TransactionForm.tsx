@@ -13,7 +13,7 @@ import {
   TextareaField,
   Alert
 } from '../components';
-import { productAPI, transactionAPI } from '../services/api';
+import { productAPI, transactionAPI, stockCheckpointAPI } from '../services/api';
 import { showSuccess, showError, showWarning, showInfo } from '../utils/toast';
 import { getLocalDateString } from '../utils/dateUtils';
 
@@ -71,6 +71,8 @@ function TransactionForm({ type }: TransactionFormProps) {
   const [showReasonModal, setShowReasonModal] = useState(false);
   const [productList, setProductList] = useState<any[]>([]);
   const [showProductList, setShowProductList] = useState(false);
+  const [checkpointWarning, setCheckpointWarning] = useState<string | null>(null);
+  const [showCheckpointModal, setShowCheckpointModal] = useState(false);
   
   // 검색 디바운싱 적용
   const debouncedSearch = useCallback(
@@ -104,10 +106,50 @@ function TransactionForm({ type }: TransactionFormProps) {
     );
   }, [products, debouncedSearchValue]);
 
+  // 체크포인트 검증 함수
+  const validateCheckpoint = useCallback(async () => {
+    if (!selectedProduct || productList.length === 0) return true;
+
+    // 모든 제품에 대해 체크포인트 검증
+    const productsToCheck = [...productList.map(item => item.product), selectedProduct].filter(Boolean);
+    const warnings: string[] = [];
+
+    for (const product of productsToCheck) {
+      try {
+        const transactionDate = new Date(date);
+        const response = await stockCheckpointAPI.validateTransaction(
+          product.product_code,
+          transactionDate.toISOString()
+        );
+
+        if (!response.is_valid && response.message) {
+          warnings.push(`${product.product_name}: ${response.message}`);
+        }
+      } catch (error) {
+        console.error('체크포인트 검증 실패:', error);
+      }
+    }
+
+    if (warnings.length > 0) {
+      setCheckpointWarning(warnings.join('\n'));
+      setShowCheckpointModal(true);
+      return false;
+    }
+
+    return true;
+  }, [selectedProduct, productList, date]);
+
   // 제품 추가 함수 - useCallback으로 최적화
-  const addProductToList = useCallback(() => {
+  const addProductToList = useCallback(async () => {
     if (!selectedProduct || !quantity) {
       showError('제품과 수량을 입력해주세요.');
+      return;
+    }
+
+    // 체크포인트 검증
+    const isValid = await validateCheckpoint();
+    if (!isValid && !showCheckpointModal) {
+      // 모달이 표시되면 사용자 확인 후 다시 시도
       return;
     }
 
@@ -134,7 +176,8 @@ function TransactionForm({ type }: TransactionFormProps) {
     setDebouncedSearchValue('');
     setAdjustmentReason('');
     setAdjustmentDetail('');
-  }, [selectedProduct, quantity, type, adjustmentReason, adjustmentDetail, productList]);
+    setCheckpointWarning(null);
+  }, [selectedProduct, quantity, type, adjustmentReason, adjustmentDetail, productList, validateCheckpoint, showCheckpointModal]);
 
   const removeProductFromList = useCallback((id: string) => {
     setProductList(prev => prev.filter(item => item.id !== id));
@@ -547,7 +590,53 @@ function TransactionForm({ type }: TransactionFormProps) {
           </div>
         </div>
       )}
-      
+
+      {/* 체크포인트 경고 모달 */}
+      {showCheckpointModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-lg w-full mx-4">
+            <div className="flex items-center gap-3 mb-4">
+              <AlertCircle className="text-orange-500" size={24} />
+              <h2 className="text-xl font-bold">과거 거래 경고</h2>
+            </div>
+            <div className="bg-orange-50 border border-orange-200 rounded p-4 mb-6">
+              <p className="text-sm text-orange-800 font-medium mb-2">
+                ⚠️ 체크포인트 이전 날짜의 거래입니다
+              </p>
+              <div className="text-sm text-gray-700 space-y-1">
+                {checkpointWarning && checkpointWarning.split('\n').map((msg, idx) => (
+                  <p key={idx}>{msg}</p>
+                ))}
+              </div>
+              <p className="text-sm text-gray-600 mt-3">
+                <strong>주의:</strong> 이 거래는 현재 재고에 반영되지 않고 기록만 남습니다.
+              </p>
+            </div>
+            <div className="flex justify-end gap-3">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowCheckpointModal(false);
+                  setCheckpointWarning(null);
+                }}
+              >
+                취소
+              </Button>
+              <Button
+                onClick={() => {
+                  setShowCheckpointModal(false);
+                  // 경고를 확인했으므로 다시 제품 추가 시도
+                  addProductToList();
+                }}
+                className="bg-orange-600 hover:bg-orange-700"
+              >
+                계속 진행
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

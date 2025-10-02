@@ -2,7 +2,7 @@
 Product Pydantic schemas
 """
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, EmailStr, ConfigDict
+from pydantic import BaseModel, Field, EmailStr, ConfigDict, field_validator
 from decimal import Decimal
 from datetime import datetime, date
 from enum import Enum
@@ -36,6 +36,14 @@ class ProductBase(BaseModel):
     moq: int = Field(default=1, ge=1, description="최소 주문 수량")
     lead_time_days: int = Field(default=7, ge=0, description="리드타임(일)")
     memo: Optional[str] = Field(None, description="제품 메모")
+
+    @field_validator('contact_email', 'supplier_email', mode='before')
+    @classmethod
+    def empty_str_to_none(cls, v):
+        """빈 문자열을 None으로 변환"""
+        if v == '':
+            return None
+        return v
 
 
 class ProductCreate(ProductBase):
@@ -71,6 +79,14 @@ class ProductUpdate(BaseModel):
     memo: Optional[str] = Field(None, description="제품 메모")
     is_active: Optional[bool] = None
 
+    @field_validator('contact_email', 'supplier_email', mode='before')
+    @classmethod
+    def empty_str_to_none(cls, v):
+        """빈 문자열을 None으로 변환"""
+        if v == '':
+            return None
+        return v
+
 
 class ProductResponse(ProductBase):
     """Product response schema"""
@@ -84,13 +100,13 @@ class ProductResponse(ProductBase):
     is_active: bool = Field(default=True, description="활성 상태")
     created_at: datetime
     updated_at: datetime
-    
+
     # 불일치 정보 추가
     discrepancy: int = Field(default=0, description="7일간 재고 불일치 합계")
     has_pending_discrepancy: bool = Field(default=False, description="미해결 불일치 여부")
     last_discrepancy_date: Optional[datetime] = Field(None, description="마지막 불일치 날짜")
     discrepancy_count: int = Field(default=0, description="7일간 조정 건수")
-    
+
     # 창고 정보 추가
     warehouse_id: Optional[UUID] = Field(None, description="창고 ID")
     warehouse_name: Optional[str] = Field(None, description="창고명")
@@ -102,6 +118,14 @@ class ProductResponse(ProductBase):
     bom: List[Dict[str, Any]] = Field(default_factory=list, description="BOM 구성 정보")
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator('contact_email', 'supplier_email', mode='before')
+    @classmethod
+    def empty_str_to_none(cls, v):
+        """빈 문자열을 None으로 변환"""
+        if v == '':
+            return None
+        return v
 
 
 class ProductListResponse(BaseModel):

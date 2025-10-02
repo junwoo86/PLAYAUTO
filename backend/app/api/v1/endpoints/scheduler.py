@@ -110,7 +110,8 @@ async def trigger_job(request: TriggerJobRequest):
         job_map = {
             "Daily Ledger 생성": "daily_ledger",
             "발주서 상태 확인": "purchase_order_check",
-            "시스템 헬스 체크": "health_check"
+            "시스템 헬스 체크": "health_check",
+            "안전 재고량 자동 업데이트": "safety_stock_update"
         }
 
         job_id = job_map.get(request.job_name)
@@ -157,7 +158,7 @@ async def run_daily_ledger():
 async def process_purchase_orders():
     """
     발주서 처리를 수동으로 실행
-    
+
     Returns:
         실행 결과
     """
@@ -166,4 +167,19 @@ async def process_purchase_orders():
         return {"message": "발주서 처리가 수동으로 실행되었습니다"}
     except Exception as e:
         logger.error(f"발주서 처리 수동 실행 실패: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/safety-stock/update")
+async def update_safety_stock():
+    """
+    안전 재고량 자동 업데이트를 수동으로 실행
+
+    Returns:
+        실행 결과
+    """
+    try:
+        await scheduler_instance.run_safety_stock_update()
+        return {"message": "안전 재고량 업데이트가 수동으로 실행되었습니다"}
+    except Exception as e:
+        logger.error(f"안전 재고량 업데이트 수동 실행 실패: {e}")
         raise HTTPException(status_code=500, detail=str(e))

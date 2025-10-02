@@ -7,6 +7,7 @@ interface HeaderProps {
     name: string;
     email?: string;
     avatar?: string;
+    group?: string;
   };
   notifications?: {
     count: number;
@@ -19,13 +20,11 @@ interface HeaderProps {
   };
   onMenuClick?: () => void;
   onNotificationClick?: () => void;
-  onProfileClick?: () => void;
-  onHelpClick?: () => void;
   onSettingsClick?: () => void;
+  onLogout?: () => void;
   showSearch?: boolean;
   searchValue?: string;
   onSearchChange?: (value: string) => void;
-  actions?: React.ReactNode;
   className?: string;
 }
 
@@ -35,13 +34,11 @@ export function Header({
   notifications,
   onMenuClick,
   onNotificationClick,
-  onProfileClick,
-  onHelpClick,
   onSettingsClick,
+  onLogout,
   showSearch = false,
   searchValue,
   onSearchChange,
-  actions,
   className = ''
 }: HeaderProps) {
   const [showUserMenu, setShowUserMenu] = React.useState(false);
@@ -82,28 +79,6 @@ export function Header({
         
         {/* 우측 영역 */}
         <div className="flex items-center gap-2">
-          {actions}
-          
-          {onHelpClick && (
-            <button
-              onClick={onHelpClick}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-              aria-label="도움말"
-            >
-              <HelpCircle size={20} className="text-gray-600" />
-            </button>
-          )}
-          
-          {onSettingsClick && (
-            <button
-              onClick={onSettingsClick}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-              aria-label="설정"
-            >
-              <Settings size={20} className="text-gray-600" />
-            </button>
-          )}
-          
           {/* 알림 */}
           {notifications && (
             <div className="relative">
@@ -134,10 +109,7 @@ export function Header({
           {user && (
             <div className="relative ml-3">
               <button
-                onClick={() => {
-                  setShowUserMenu(!showUserMenu);
-                  onProfileClick?.();
-                }}
+                onClick={() => setShowUserMenu(!showUserMenu)}
                 className="flex items-center gap-2 p-2 hover:bg-gray-100 rounded-lg transition-colors"
               >
                 {user.avatar ? (
@@ -151,13 +123,26 @@ export function Header({
                     <User size={16} className="text-gray-600" />
                   </div>
                 )}
-                <span className="text-sm font-medium text-gray-700">{user.name}</span>
+                <div className="text-left">
+                  <span className="text-sm font-medium text-gray-700">{user.name}</span>
+                  {user.group && (
+                    <span className="text-xs text-gray-500 block">{user.group}</span>
+                  )}
+                </div>
                 <ChevronDown size={16} className="text-gray-500" />
               </button>
-              
+
               {showUserMenu && (
-                <UserDropdown 
+                <UserDropdown
                   user={user}
+                  onSettingsClick={() => {
+                    setShowUserMenu(false);
+                    onSettingsClick?.();
+                  }}
+                  onLogout={() => {
+                    setShowUserMenu(false);
+                    onLogout?.();
+                  }}
                   onClose={() => setShowUserMenu(false)}
                 />
               )}
@@ -226,14 +211,16 @@ interface UserDropdownProps {
     name: string;
     email?: string;
   };
+  onSettingsClick?: () => void;
+  onLogout?: () => void;
   onClose: () => void;
 }
 
-function UserDropdown({ user, onClose }: UserDropdownProps) {
+function UserDropdown({ user, onSettingsClick, onLogout, onClose }: UserDropdownProps) {
   return (
     <>
-      <div 
-        className="fixed inset-0 z-40" 
+      <div
+        className="fixed inset-0 z-40"
         onClick={onClose}
       />
       <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-lg border border-gray-200 z-50">
@@ -244,20 +231,24 @@ function UserDropdown({ user, onClose }: UserDropdownProps) {
           )}
         </div>
         <div className="py-1">
-          <a href="#" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-            프로필
-          </a>
-          <a href="#" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-            설정
-          </a>
-          <a href="#" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-            도움말
-          </a>
+          {onSettingsClick && (
+            <button
+              onClick={onSettingsClick}
+              className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+            >
+              설정
+            </button>
+          )}
         </div>
         <div className="border-t py-1">
-          <a href="#" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-            로그아웃
-          </a>
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+            >
+              로그아웃
+            </button>
+          )}
         </div>
       </div>
     </>

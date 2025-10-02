@@ -26,17 +26,95 @@ api.interceptors.request.use(
   }
 );
 
+// 토큰 갱신 플래그 (중복 갱신 방지)
+let isRefreshing = false;
+let failedQueue: any[] = [];
+
+const processQueue = (error: any, token: string | null = null) => {
+  failedQueue.forEach(prom => {
+    if (error) {
+      prom.reject(error);
+    } else {
+      prom.resolve(token);
+    }
+  });
+
+  failedQueue = [];
+};
+
 // 응답 인터셉터
 api.interceptors.response.use(
   (response) => {
     return response;
   },
-  (error) => {
-    if (error.response?.status === 401) {
-      // 인증 실패 시 처리
-      localStorage.removeItem('authToken');
-      window.location.href = '/login';
+  async (error) => {
+    const originalRequest = error.config;
+
+    // originalRequest가 없으면 에러 반환
+    if (!originalRequest) {
+      return Promise.reject(error);
     }
+
+    // 401 에러이고 로그인/리프레시 API가 아닌 경우
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      // 로그인 페이지 요청이면 바로 리다이렉트
+      if (originalRequest.url && (originalRequest.url.includes('/auth/login') ||
+          originalRequest.url.includes('/auth/refresh'))) {
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('refreshToken');
+        window.location.href = '/login';
+        return Promise.reject(error);
+      }
+
+      if (isRefreshing) {
+        // 이미 갱신 중이면 대기
+        return new Promise((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        }).then(token => {
+          originalRequest.headers.Authorization = `Bearer ${token}`;
+          return api(originalRequest);
+        }).catch(err => {
+          return Promise.reject(err);
+        });
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      const refreshToken = localStorage.getItem('refreshToken');
+
+      if (!refreshToken) {
+        // 리프레시 토큰이 없으면 로그인 페이지로
+        localStorage.removeItem('authToken');
+        window.location.href = '/login';
+        return Promise.reject(error);
+      }
+
+      try {
+        // 토큰 갱신 시도
+        const response = await api.post('/auth/refresh', {
+          refresh_token: refreshToken
+        });
+
+        const { access_token } = response.data;
+        localStorage.setItem('authToken', access_token);
+
+        processQueue(null, access_token);
+        originalRequest.headers.Authorization = `Bearer ${access_token}`;
+
+        return api(originalRequest);
+      } catch (refreshError) {
+        // 갱신 실패 시 로그인 페이지로
+        processQueue(refreshError, null);
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('refreshToken');
+        window.location.href = '/login';
+        return Promise.reject(refreshError);
+      } finally {
+        isRefreshing = false;
+      }
+    }
+
     return Promise.reject(error);
   }
 );
@@ -44,7 +122,7 @@ api.interceptors.response.use(
 // Product API
 export const productAPI = {
   // 모든 제품 조회
-  getAll: async (skip = 0, limit = 100, searchTerm?: string, category?: string, warehouseId?: string, isActive?: boolean) => {
+  getAll: async (skip = 0, limit = 200, searchTerm?: string, category?: string, warehouseId?: string, isActive?: boolean) => {
     const params: any = { skip, limit };
     if (searchTerm) params.search = searchTerm;
     if (category) params.category = category;
@@ -265,7 +343,7 @@ export const productBOMAPI = {
     const params: any = {};
     if (parentProductCode) params.parent_product_code = parentProductCode;
 
-    const response = await api.get('/product-bom', { params });
+    const response = await api.get('/product-bom/', { params });
     return response.data;
   },
 
@@ -279,24 +357,50 @@ export const productBOMAPI = {
       }
     }
 
-    // 새로운 BOM 생성
+    // 새로운 BOM 생성 (개별적으로 생성)
+    const createdBoms = [];
     if (boms.length > 0) {
-      const bomData = boms.map(item => ({
-        parent_product_code: parentProductCode,
-        child_product_code: item.childProductCode,
-        quantity: item.quantity
-      }));
+      for (const item of boms) {
+        const bomData = {
+          parent_product_code: parentProductCode,
+          child_product_code: item.childProductCode,
+          quantity: item.quantity
+        };
 
-      const response = await api.post('/product-bom/bulk', bomData);
-      return response.data;
+        try {
+          const response = await api.post('/product-bom/', bomData);
+          createdBoms.push(response.data);
+        } catch (error) {
+          console.error('BOM 생성 실패:', error);
+          throw error;
+        }
+      }
     }
 
-    return [];
+    return createdBoms;
   },
 
   // 세트 조립 가능 수량 조회
   getSetProductStock: async (productCode: string) => {
     const response = await api.get(`/product-bom/set-product-stock/${productCode}`);
+    return response.data;
+  },
+
+  // 세트 제품 조립
+  assemble: async (productCode: string, quantity: number) => {
+    const response = await api.post('/product-bom/assemble', {
+      product_code: productCode,
+      quantity: quantity
+    });
+    return response.data;
+  },
+
+  // 세트 제품 해체
+  disassemble: async (productCode: string, quantity: number) => {
+    const response = await api.post('/product-bom/disassemble', {
+      product_code: productCode,
+      quantity: quantity
+    });
     return response.data;
   }
 };
@@ -320,6 +424,56 @@ export const dailyLedgerAPI = {
   }
 };
 
+// Stock Checkpoint API
+export const stockCheckpointAPI = {
+  // 체크포인트 생성
+  create: async (checkpoint: any) => {
+    const response = await api.post('/stock-checkpoints', checkpoint);
+    return response.data;
+  },
+
+  // 체크포인트 목록 조회
+  getAll: async (params?: {
+    product_code?: string;
+    checkpoint_type?: string;
+    start_date?: string;
+    end_date?: string;
+    is_active?: boolean;
+    skip?: number;
+    limit?: number;
+  }) => {
+    const response = await api.get('/stock-checkpoints', { params });
+    return response.data;
+  },
+
+  // 특정 체크포인트 조회
+  getById: async (id: string) => {
+    const response = await api.get(`/stock-checkpoints/${id}`);
+    return response.data;
+  },
+
+  // 거래 검증 (체크포인트 확인)
+  validateTransaction: async (productCode: string, transactionDate: string) => {
+    const response = await api.post('/stock-checkpoints/validate-transaction', {
+      product_code: productCode,
+      transaction_date: transactionDate
+    });
+    return response.data;
+  },
+
+  // 체크포인트 수정
+  update: async (id: string, data: any) => {
+    const response = await api.put(`/stock-checkpoints/${id}`, data);
+    return response.data;
+  },
+
+  // 체크포인트 삭제 (비활성화)
+  delete: async (id: string) => {
+    const response = await api.delete(`/stock-checkpoints/${id}`);
+    return response.data;
+  }
+};
+
 // Export/Import API
 export const dataAPI = {
   // 데이터 내보내기
@@ -339,6 +493,184 @@ export const dataAPI = {
       headers: {
         'Content-Type': 'multipart/form-data'
       }
+    });
+    return response.data;
+  }
+};
+
+// Auth API
+export const authAPI = {
+  // 로그인
+  login: async (username: string, password: string) => {
+    const response = await api.post('/auth/login', {
+      username,
+      password
+    });
+    return response.data;
+  },
+
+  // 회원가입
+  signup: async (data: { email: string; password: string; name: string }) => {
+    const response = await api.post('/auth/signup', data);
+    return response.data;
+  },
+
+  // 로그아웃
+  logout: async () => {
+    const response = await api.post('/auth/logout');
+    return response.data;
+  },
+
+  // 현재 사용자 정보 조회
+  me: async () => {
+    const response = await api.get('/auth/me');
+    return response.data;
+  },
+
+  // 토큰 갱신
+  refresh: async (refreshToken: string) => {
+    const response = await api.post('/auth/refresh', {
+      refresh_token: refreshToken
+    });
+    return response.data;
+  }
+};
+
+// User API
+export const userAPI = {
+  // 전체 사용자 목록 조회
+  getAll: async () => {
+    const response = await api.get('/users');
+    return response.data;
+  },
+
+  // 승인 대기 사용자 목록 조회
+  getPending: async () => {
+    const response = await api.get('/users/pending');
+    return response.data;
+  },
+
+  // 특정 사용자 조회
+  getById: async (userId: number) => {
+    const response = await api.get(`/users/${userId}`);
+    return response.data;
+  },
+
+  // 사용자 상태 변경
+  updateStatus: async (userId: number, status: string) => {
+    const response = await api.put(`/users/${userId}/status`, {
+      status
+    });
+    return response.data;
+  },
+
+  // 사용자 그룹 변경
+  updateGroup: async (userId: number, groupId: number) => {
+    const response = await api.put(`/users/${userId}/group`, {
+      group_id: groupId
+    });
+    return response.data;
+  },
+
+  // 사용자 승인
+  approve: async (userId: number, groupId: number) => {
+    const response = await api.post(`/users/${userId}/approve`, {
+      group_id: groupId
+    });
+    return response.data;
+  },
+
+  // 사용자 삭제 (비활성화)
+  delete: async (userId: number) => {
+    const response = await api.delete(`/users/${userId}`);
+    return response.data;
+  }
+};
+
+// Group API
+export const groupAPI = {
+  // 전체 그룹 목록 조회
+  getAll: async () => {
+    const response = await api.get('/groups');
+    return response.data;
+  },
+
+  // 특정 그룹 조회
+  getById: async (groupId: number) => {
+    const response = await api.get(`/groups/${groupId}`);
+    return response.data;
+  },
+
+  // 그룹 권한 조회
+  getPermissions: async (groupId: number) => {
+    const response = await api.get(`/groups/${groupId}/permissions`);
+    return response.data;
+  },
+
+  // 전체 권한 목록 조회
+  getAllPermissions: async () => {
+    const response = await api.get('/groups/permissions');
+    return response.data;
+  },
+
+  // 그룹 생성
+  create: async (data: { name: string; description?: string }) => {
+    const response = await api.post('/groups', data);
+    return response.data;
+  },
+
+  // 그룹 수정
+  update: async (groupId: number, data: { name?: string; description?: string }) => {
+    const response = await api.put(`/groups/${groupId}`, data);
+    return response.data;
+  },
+
+  // 그룹 권한 업데이트
+  updatePermissions: async (groupId: number, permissionIds: number[]) => {
+    const response = await api.put(`/groups/${groupId}/permissions`, {
+      permission_ids: permissionIds
+    });
+    return response.data;
+  },
+
+  // 그룹 삭제
+  delete: async (groupId: number) => {
+    const response = await api.delete(`/groups/${groupId}`);
+    return response.data;
+  }
+};
+
+// Notification API
+export const notificationAPI = {
+  // 전체 알림 설정 조회
+  getAll: async () => {
+    const response = await api.get('/notifications');
+    return response.data;
+  },
+
+  // 특정 그룹의 알림 설정 조회
+  getByGroup: async (groupId: number) => {
+    const response = await api.get(`/notifications/group/${groupId}`);
+    return response.data;
+  },
+
+  // 그룹의 알림 설정 업데이트 (settings는 {notification_type: is_enabled} 형태의 객체)
+  updateGroupSettings: async (groupId: number, settings: {[key: string]: boolean}) => {
+    const response = await api.put(`/notifications/group/${groupId}`, settings);
+    return response.data;
+  },
+
+  // 사용 가능한 이벤트 타입 목록
+  getEventTypes: async () => {
+    const response = await api.get('/notifications/event-types');
+    return response.data;
+  },
+
+  // 알림 테스트 전송
+  testNotification: async (groupId: number, notificationType: string) => {
+    const response = await api.post('/notifications/test', {
+      group_id: groupId,
+      notification_type: notificationType
     });
     return response.data;
   }
