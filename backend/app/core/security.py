@@ -43,14 +43,24 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None):
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """비밀번호 검증 (bcrypt 72바이트 제한 처리)"""
     # bcrypt는 72바이트까지만 처리 가능
-    truncated_password = plain_password[:72] if len(plain_password.encode('utf-8')) > 72 else plain_password
+    password_bytes = plain_password.encode('utf-8')
+    if len(password_bytes) > 72:
+        # 바이트 단위로 자르고 다시 디코딩 (truncated bytes는 무시)
+        truncated_password = password_bytes[:72].decode('utf-8', errors='ignore')
+    else:
+        truncated_password = plain_password
     return pwd_context.verify(truncated_password, hashed_password)
 
 
 def get_password_hash(password: str) -> str:
     """비밀번호 해시 생성 (bcrypt 72바이트 제한 처리)"""
     # bcrypt는 72바이트까지만 처리 가능
-    truncated_password = password[:72] if len(password.encode('utf-8')) > 72 else password
+    password_bytes = password.encode('utf-8')
+    if len(password_bytes) > 72:
+        # 바이트 단위로 자르고 다시 디코딩 (truncated bytes는 무시)
+        truncated_password = password_bytes[:72].decode('utf-8', errors='ignore')
+    else:
+        truncated_password = password
     return pwd_context.hash(truncated_password)
 
 
