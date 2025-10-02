@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Database
+*.db
+*.sqlite3
+
+# Environment
+.env.local
+.env.*.local
+
+# Git
+.git/
+.gitignore
+
+# Misc
+*.md
+docs/
+tests/
+backups/
+migrations/*.sql
+scripts/
+.github/
+deploy/
+config/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Python scripts (utility scripts not needed in production)
+*.py
+!app/**/*.py
+!app/*.py
+
+# Keep only necessary files for production
