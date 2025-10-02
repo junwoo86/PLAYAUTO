@@ -50,6 +50,9 @@ class Settings(BaseSettings):
         if self.FRONTEND_URL:
             origins.append(self.FRONTEND_URL)
 
+        # Production 도메인 추가
+        origins.append("https://playauto.vercel.app")
+
         # 기본 개발 환경 URL들 추가
         origins.extend([
             "http://localhost:3000",
