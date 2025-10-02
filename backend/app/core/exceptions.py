@@ -91,6 +91,15 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
     """커스텀 애플리케이션 예외 핸들러"""
     logger.error(f"AppException: {exc.error_code} - {exc.detail}")
 
+    # CORS 헤더 추가
+    headers = exc.headers or {}
+    origin = request.headers.get("origin")
+    if origin:
+        headers.update({
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        })
+
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -102,7 +111,7 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
                 "method": request.method
             }
         },
-        headers=exc.headers
+        headers=headers
     )
 
 
@@ -122,6 +131,15 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
         503: "SERVICE_UNAVAILABLE"
     }
 
+    # CORS 헤더 추가
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin:
+        headers.update({
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        })
+
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -132,7 +150,8 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
                 "path": str(request.url.path),
                 "method": request.method
             }
-        }
+        },
+        headers=headers
     )
 
 
@@ -147,6 +166,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         msg = f"{loc}: {error['msg']}"
         error_messages.append(msg)
 
+    # CORS 헤더 추가
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin:
+        headers.update({
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        })
+
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
@@ -158,7 +186,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
                 "path": str(request.url.path),
                 "method": request.method
             }
-        }
+        },
+        headers=headers
     )
 
 
@@ -168,6 +197,15 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
 
     # 개발 환경에서는 상세 에러 정보 제공
     from app.core.config import settings
+
+    # CORS 헤더 추가
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin:
+        headers.update({
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        })
 
     if settings.DEBUG:
         return JSONResponse(
@@ -184,7 +222,8 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
                     "path": str(request.url.path),
                     "method": request.method
                 }
-            }
+            },
+            headers=headers
         )
 
     return JSONResponse(
@@ -197,7 +236,8 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
                 "path": str(request.url.path),
                 "method": request.method
             }
-        }
+        },
+        headers=headers
     )
 
 
