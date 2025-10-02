@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     
     # Application
     APP_NAME: str = "PLAYAUTO Backend API"
-    APP_VERSION: str = "1.0.2"  # bcrypt 및 CORS 예외 핸들러 수정 버전
+    APP_VERSION: str = "1.0.3"  # Railway 배포 수정 버전
     DEBUG: bool = True
     
     # Database
