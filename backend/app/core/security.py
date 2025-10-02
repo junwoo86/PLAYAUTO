@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 import secrets
 import os
 from app.core.config import settings
@@ -11,9 +11,6 @@ SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES  # config.py에서 가져옴
 REFRESH_TOKEN_EXPIRE_DAYS = 7
-
-# 비밀번호 해싱
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -44,24 +41,21 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """비밀번호 검증 (bcrypt 72바이트 제한 처리)"""
     # bcrypt는 72바이트까지만 처리 가능
     password_bytes = plain_password.encode('utf-8')
-    if len(password_bytes) > 72:
-        # 바이트 단위로 자르고 다시 디코딩 (truncated bytes는 무시)
-        truncated_password = password_bytes[:72].decode('utf-8', errors='ignore')
-    else:
-        truncated_password = plain_password
-    return pwd_context.verify(truncated_password, hashed_password)
+    # 72바이트로 자르기 (bcrypt 제한)
+    truncated_bytes = password_bytes[:72]
+    # bcrypt.checkpw는 바이트를 직접 받음
+    return bcrypt.checkpw(truncated_bytes, hashed_password.encode('utf-8'))
 
 
 def get_password_hash(password: str) -> str:
     """비밀번호 해시 생성 (bcrypt 72바이트 제한 처리)"""
     # bcrypt는 72바이트까지만 처리 가능
     password_bytes = password.encode('utf-8')
-    if len(password_bytes) > 72:
-        # 바이트 단위로 자르고 다시 디코딩 (truncated bytes는 무시)
-        truncated_password = password_bytes[:72].decode('utf-8', errors='ignore')
-    else:
-        truncated_password = password
-    return pwd_context.hash(truncated_password)
+    # 72바이트로 자르기 (bcrypt 제한)
+    truncated_bytes = password_bytes[:72]
+    # bcrypt.hashpw는 바이트를 직접 받고 반환함
+    hashed = bcrypt.hashpw(truncated_bytes, bcrypt.gensalt())
+    return hashed.decode('utf-8')
 
 
 def decode_token(token: str) -> dict:

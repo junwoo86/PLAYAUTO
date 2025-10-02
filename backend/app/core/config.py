@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     
     # Application
     APP_NAME: str = "PLAYAUTO Backend API"
-    APP_VERSION: str = "1.0.6"  # bcrypt 바이트 단위 처리 수정
+    APP_VERSION: str = "1.0.7"  # passlib 대신 bcrypt 직접 사용
     DEBUG: bool = True
     
     # Database
