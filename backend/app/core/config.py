@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     
     # Application
     APP_NAME: str = "PLAYAUTO Backend API"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "1.0.1"  # CORS 수정 버전
     DEBUG: bool = True
     
     # Database
