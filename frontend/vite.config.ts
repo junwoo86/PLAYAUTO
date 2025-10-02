@@ -14,6 +14,12 @@ export default defineConfig({
       '@types': path.resolve(__dirname, './src/types'),
     }
   },
+  define: {
+    // 프로덕션 빌드 시 환경변수 명시적 정의
+    'import.meta.env.VITE_API_BASE_URL': JSON.stringify(
+      process.env.VITE_API_BASE_URL || 'https://playauto-production.up.railway.app'
+    ),
+  },
   server: {
     port: 3000,
     proxy: {
