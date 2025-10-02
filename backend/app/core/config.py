@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     
     # Application
     APP_NAME: str = "PLAYAUTO Backend API"
-    APP_VERSION: str = "1.0.3"  # Railway 배포 수정 버전
+    APP_VERSION: str = "1.0.4"  # Railway 캐시 무효화 및 재배포
     DEBUG: bool = True
     
     # Database
