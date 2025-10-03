@@ -106,7 +106,8 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_url="/openapi.json",
     openapi_tags=tags_metadata,
-    lifespan=lifespan
+    lifespan=lifespan,
+    redirect_slashes=False  # HTTPS Mixed Content 에러 방지 (Railway 배포 환경)
 )
 
 # CORS 미들웨어 설정
