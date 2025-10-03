@@ -925,7 +925,7 @@ function BatchProcess() {
                   onClick={downloadTransactionTemplate}
                   disabled={isLoading || products.length === 0}
                 >
-                  입출고 템플릿 다운로드 {products.length > 0 && `(${products.length}개 제품)`}
+                  입출고 템플릿 다운로드
                 </Button>
               </div>
 
@@ -1061,7 +1061,7 @@ function BatchProcess() {
                   onClick={downloadStockCountTemplate}
                   disabled={isLoading || products.length === 0}
                 >
-                  재고실사 템플릿 다운로드 {products.length > 0 && `(${products.length}개 제품)`}
+                  재고실사 템플릿 다운로드
                 </Button>
               </div>
 
