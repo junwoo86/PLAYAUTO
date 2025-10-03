@@ -77,6 +77,7 @@ function BatchProcess() {
   }, []);
   
   const fetchProducts = async () => {
+    setIsLoading(true);
     try {
       // 비활성화된 제품도 포함하여 조회 (과거 이력 기록을 위해)
       // limit은 백엔드에서 최대 500으로 제한됨
@@ -85,8 +86,13 @@ function BatchProcess() {
       const inactiveResponse = await productAPI.getAll(0, 500, undefined, undefined, undefined, false);
       const allProducts = [...(activeResponse.data || []), ...(inactiveResponse.data || [])];
       setProducts(allProducts);
+      console.log(`제품 ${allProducts.length}개 로드 완료`);
     } catch (error) {
+      console.error('제품 목록 로드 실패:', error);
       showError('제품 목록을 불러오는데 실패했습니다');
+      setProducts([]);
+    } finally {
+      setIsLoading(false);
     }
   };
   
@@ -136,6 +142,18 @@ function BatchProcess() {
 
   // 입출고 템플릿 다운로드
   const downloadTransactionTemplate = () => {
+    // 제품 목록 로딩 중 체크
+    if (isLoading) {
+      showWarning('제품 목록을 불러오는 중입니다. 잠시 후 다시 시도해주세요.');
+      return;
+    }
+
+    // 제품 목록 없음 체크
+    if (products.length === 0) {
+      showError('다운로드할 제품 정보가 없습니다. 제품 목록을 먼저 로드해주세요.');
+      return;
+    }
+
     // CSV 필드를 큰따옴표로 감싸는 헬퍼 함수
     const escapeCSVField = (field: string | number | null | undefined): string => {
       if (field === null || field === undefined) return '""';
@@ -188,6 +206,18 @@ function BatchProcess() {
 
   // 재고실사 템플릿 다운로드
   const downloadStockCountTemplate = () => {
+    // 제품 목록 로딩 중 체크
+    if (isLoading) {
+      showWarning('제품 목록을 불러오는 중입니다. 잠시 후 다시 시도해주세요.');
+      return;
+    }
+
+    // 제품 목록 없음 체크
+    if (products.length === 0) {
+      showError('다운로드할 제품 정보가 없습니다. 제품 목록을 먼저 로드해주세요.');
+      return;
+    }
+
     // CSV 필드를 큰따옴표로 감싸는 헬퍼 함수
     const escapeCSVField = (field: string | number | null | undefined): string => {
       if (field === null || field === undefined) return '""';
@@ -884,8 +914,18 @@ function BatchProcess() {
 
               {/* 템플릿 다운로드 버튼 */}
               <div className="mb-6">
-                <Button icon={Download} onClick={downloadTransactionTemplate}>
-                  입출고 템플릿 다운로드
+                {isLoading && (
+                  <div className="flex items-center gap-2 text-sm text-gray-600 mb-2">
+                    <RefreshCw size={16} className="animate-spin" />
+                    제품 목록 로딩 중...
+                  </div>
+                )}
+                <Button
+                  icon={Download}
+                  onClick={downloadTransactionTemplate}
+                  disabled={isLoading || products.length === 0}
+                >
+                  입출고 템플릿 다운로드 {products.length > 0 && `(${products.length}개 제품)`}
                 </Button>
               </div>
 
@@ -1010,8 +1050,18 @@ function BatchProcess() {
 
               {/* 템플릿 다운로드 버튼 */}
               <div className="mb-6">
-                <Button icon={Download} onClick={downloadStockCountTemplate}>
-                  재고실사 템플릿 다운로드
+                {isLoading && (
+                  <div className="flex items-center gap-2 text-sm text-gray-600 mb-2">
+                    <RefreshCw size={16} className="animate-spin" />
+                    제품 목록 로딩 중...
+                  </div>
+                )}
+                <Button
+                  icon={Download}
+                  onClick={downloadStockCountTemplate}
+                  disabled={isLoading || products.length === 0}
+                >
+                  재고실사 템플릿 다운로드 {products.length > 0 && `(${products.length}개 제품)`}
                 </Button>
               </div>
 
