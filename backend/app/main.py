@@ -3,6 +3,9 @@ FastAPI Main Application
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 from contextlib import asynccontextmanager
 import logging
 
@@ -15,6 +18,21 @@ from app.api.v1 import api_router
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class ProxyHeadersMiddleware(BaseHTTPMiddleware):
+    """
+    Railway 및 기타 프록시 환경에서 X-Forwarded-* 헤더를 처리하여
+    HTTPS 리다이렉트 시 프로토콜을 올바르게 유지합니다.
+    """
+    async def dispatch(self, request: Request, call_next):
+        # X-Forwarded-Proto 헤더가 있으면 이를 사용
+        forwarded_proto = request.headers.get("x-forwarded-proto")
+        if forwarded_proto:
+            request.scope["scheme"] = forwarded_proto
+
+        response = await call_next(request)
+        return response
 
 
 @asynccontextmanager
@@ -106,9 +124,13 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_url="/openapi.json",
     openapi_tags=tags_metadata,
-    lifespan=lifespan,
-    redirect_slashes=False  # HTTPS Mixed Content 에러 방지 (Railway 배포 환경)
+    lifespan=lifespan
 )
+
+# Proxy Headers 미들웨어 설정 (HTTPS Mixed Content 에러 방지)
+# Railway와 같은 프록시 환경에서 X-Forwarded-Proto 헤더를 처리하여
+# trailing slash 리다이렉트 시 HTTPS를 유지합니다
+app.add_middleware(ProxyHeadersMiddleware)
 
 # CORS 미들웨어 설정
 app.add_middleware(
